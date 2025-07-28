@@ -779,14 +779,12 @@ class Game:
         """Find a suitable equipment slot for an item."""
         from logic.character_system import ItemType, EquipmentSlot
         
-        # Map item types to equipment slots
+        # Map item types to equipment slots (only using valid enum values)
         slot_mapping = {
             ItemType.WEAPON: [EquipmentSlot.WEAPON_1, EquipmentSlot.WEAPON_2],
             ItemType.ARMOUR: [EquipmentSlot.TORSO],
             ItemType.HELMET: [EquipmentSlot.HEAD],
-            ItemType.SHIELD: [EquipmentSlot.SHIELD],
-            ItemType.BOOTS: [EquipmentSlot.FEET],
-            ItemType.GLOVES: [EquipmentSlot.HANDS],
+            ItemType.BOOTS: [EquipmentSlot.LEGS],
             ItemType.RING: [EquipmentSlot.RING_1, EquipmentSlot.RING_2],
             ItemType.AMULET: [EquipmentSlot.NECK]
         }

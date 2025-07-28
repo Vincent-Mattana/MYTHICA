@@ -35,6 +35,9 @@ from .turn_system import TurnManager, ActionCosts, ActionType
 from .game_states import GameStateManager, CharacterClassData, CharacterClass
 from .config_manager import ConfigManager
 
+# Import sprite management system
+from .sprite_manager import sprite_manager, SpriteManager, SpriteType
+
 __all__ = [
     # Character System
     'Character', 'CharacterStats', 'Equipment', 'Item', 'ItemGenerator',
@@ -53,5 +56,8 @@ __all__ = [
     'GameStateManager', 'CharacterClassData', 'CharacterClass',
     
     # Configuration
-    'ConfigManager'
+    'ConfigManager',
+    
+    # Sprite System
+    'sprite_manager', 'SpriteManager', 'SpriteType'
 ] 
