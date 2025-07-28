@@ -38,6 +38,9 @@ from .config_manager import ConfigManager
 # Import sprite management system
 from .sprite_manager import sprite_manager, SpriteManager, SpriteType
 
+# Import inventory system
+from .inventory_system import Inventory, InteractiveCharacterScreen, InventoryAction
+
 __all__ = [
     # Character System
     'Character', 'CharacterStats', 'Equipment', 'Item', 'ItemGenerator',
@@ -59,5 +62,8 @@ __all__ = [
     'ConfigManager',
     
     # Sprite System
-    'sprite_manager', 'SpriteManager', 'SpriteType'
+    'sprite_manager', 'SpriteManager', 'SpriteType',
+    
+    # Inventory System
+    'Inventory', 'InteractiveCharacterScreen', 'InventoryAction'
 ] 

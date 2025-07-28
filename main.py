@@ -17,7 +17,8 @@ from logic import (
     Enemy, EnemyManager, EnemyType,
     TurnManager, ActionCosts, ActionType,
     GameStateManager, CharacterClassData, CharacterClass,
-    ConfigManager
+    ConfigManager,
+    InteractiveCharacterScreen, Inventory, InventoryAction
 )
 from logic.config_manager import config
 from logic.game_states import GameState
@@ -168,6 +169,17 @@ class Game:
         self.show_character_sheet = False
         self.player_is_dead = False
         
+        # Interactive character screen/inventory
+        self.interactive_character_screen = InteractiveCharacterScreen(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.show_interactive_inventory = False
+        
+        # Continuous movement state
+        self.movement_timer = 0  # Timer to control movement speed when holding keys
+        self.movement_delay = config.get_float_setting('Game', 'continuous_movement_delay', 0.15)  # Seconds between movements when holding key
+        self.key_hold_start_time = {}  # Track when keys were first pressed
+        self.continuous_hold_delay = config.get_float_setting('Game', 'continuous_hold_delay', 0.3)  # How long to hold before continuous movement starts
+        self.last_manual_move_time = 0  # Track manual moves to prevent overlap
+        
         # Auto-explore state
         self.auto_explore_active = False
         self.auto_explore_path = []  # Queue of positions to move to
@@ -192,6 +204,8 @@ class Game:
             self.game_log.pop(0)
         
     def handle_events(self):
+        mouse_pos = pygame.mouse.get_pos()
+        
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
@@ -201,7 +215,13 @@ class Game:
                     config.reload_config()
                     print("Configuration reloaded!")
                 elif self.state_manager.current_state == GameState.PLAYING:
-                    self.handle_player_input(event.key)
+                    # Check if interactive inventory is open
+                    if self.show_interactive_inventory:
+                        if (config.is_key_pressed_for_action('quit_game', event.key) or 
+                            config.is_key_pressed_for_action('inventory', event.key)):
+                            self.show_interactive_inventory = False
+                    else:
+                        self.handle_player_input(event.key)
                 else:
                     # Handle menu/game over input
                     continue_game, character = self.state_manager.handle_input(event)
@@ -209,11 +229,33 @@ class Game:
                         self.running = False
                     elif character:
                         self.start_new_game(character)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                # Handle mouse clicks for interactive inventory
+                if (self.state_manager.current_state == GameState.PLAYING and 
+                    self.show_interactive_inventory and self.player):
+                    message = self.interactive_character_screen.handle_mouse_click(
+                        event.pos, self.player.character, self.player.character.inventory)
+                    if message:
+                        self.add_to_log(message, WHITE)
+            elif event.type == pygame.MOUSEMOTION:
+                # Handle mouse hover for tooltips
+                if (self.state_manager.current_state == GameState.PLAYING and 
+                    self.show_interactive_inventory and self.player):
+                    self.interactive_character_screen.handle_mouse_hover(
+                        event.pos, self.player.character, self.player.character.inventory)
     
     def handle_player_input(self, key):
         # Check for special actions first
         if config.is_key_pressed_for_action('character_sheet', key):
             self.show_character_sheet = not self.show_character_sheet
+            if self.show_character_sheet:
+                self.show_interactive_inventory = False  # Close inventory if open
+            return
+        
+        if config.is_key_pressed_for_action('inventory', key):
+            self.show_interactive_inventory = not self.show_interactive_inventory
+            if self.show_interactive_inventory:
+                self.show_character_sheet = False  # Close old sheet if open
             return
         
         if config.is_key_pressed_for_action('quit_game', key):
@@ -255,6 +297,10 @@ class Game:
             if self.player_is_dead or not self.turn_manager.can_player_act():
                 return  # Player cannot act yet or is dead
             
+            # Record this as a manual move to prevent continuous movement overlap
+            import time
+            self.last_manual_move_time = time.time()
+            
             # Cancel auto-explore on manual movement
             if self.auto_explore_active:
                 self.auto_explore_active = False
@@ -291,6 +337,9 @@ class Game:
     def update(self):
         # Only update game logic when actually playing
         if self.state_manager.current_state == GameState.PLAYING and self.player:
+            # Process continuous movement from held keys
+            self.process_continuous_movement()
+            
             # Process auto-explore if active
             self.process_auto_explore()
             
@@ -312,6 +361,97 @@ class Game:
         )
         # Add all visible tiles to the explored set
         self.explored.update(self.visible)
+    
+    def process_continuous_movement(self):
+        """Process movement when direction keys are held down for a sustained period."""
+        # Skip if player is dead, inventory is open, or can't act
+        if (self.player_is_dead or 
+            self.show_interactive_inventory or 
+            not self.turn_manager.can_player_act()):
+            return
+        
+        # Skip if auto-explore is active (let auto-explore handle movement)
+        if self.auto_explore_active:
+            return
+        
+        import time
+        current_time = time.time()
+        
+        # Don't do continuous movement too soon after a manual move
+        if current_time - self.last_manual_move_time < 0.1:
+            return
+        
+        # Update movement timer
+        if current_time - self.movement_timer < self.movement_delay:
+            return  # Not enough time has passed for next movement
+        
+        # Check for held keys
+        keys = pygame.key.get_pressed()
+        
+        # Track key hold times and find currently pressed movement keys
+        currently_held_actions = []
+        for direction_action in ['move_north', 'move_south', 'move_west', 'move_east',
+                               'move_northwest', 'move_northeast', 'move_southwest', 'move_southeast']:
+            if config.is_action_currently_pressed(direction_action, keys):
+                # Key is currently pressed
+                if direction_action not in self.key_hold_start_time:
+                    # Key just started being pressed
+                    self.key_hold_start_time[direction_action] = current_time
+                elif current_time - self.key_hold_start_time[direction_action] >= self.continuous_hold_delay:
+                    # Key has been held long enough for continuous movement
+                    currently_held_actions.append(direction_action)
+            else:
+                # Key is not pressed, remove from tracking
+                if direction_action in self.key_hold_start_time:
+                    del self.key_hold_start_time[direction_action]
+        
+        # Only proceed if we have keys held long enough for continuous movement
+        if not currently_held_actions:
+            return
+        
+        # Calculate movement direction from held keys
+        dx, dy = 0, 0
+        for direction_action in currently_held_actions:
+            movement_dx, movement_dy = config.get_movement_direction_for_action(direction_action)
+            dx += movement_dx
+            dy += movement_dy
+        
+        if dx != 0 or dy != 0:
+            # Normalize diagonal movement (prevent faster diagonal movement)
+            if abs(dx) > 1:
+                dx = 1 if dx > 0 else -1
+            if abs(dy) > 1:
+                dy = 1 if dy > 0 else -1
+            
+            new_x = self.player.x + dx
+            new_y = self.player.y + dy
+            
+            # Check if the target position is a valid floor tile
+            if not self.dungeon.can_move_to(new_x, new_y):
+                return  # Can't move into walls
+            
+            # Check for enemy at target position
+            enemy_at_target = self.enemy_manager.get_enemy_at(new_x, new_y)
+            if enemy_at_target and enemy_at_target.is_alive:
+                # Combat! Schedule attack action
+                dexterity = self.player.character.stats.get_total_stat(StatType.DEXTERITY)
+                self.turn_manager.schedule_player_action(
+                    ActionType.ATTACK, 
+                    target_pos=(new_x, new_y),
+                    target_id=f"enemy_{enemy_at_target.x}_{enemy_at_target.y}",
+                    dexterity=dexterity
+                )
+            else:
+                # Schedule movement action
+                dexterity = self.player.character.stats.get_total_stat(StatType.DEXTERITY)
+                self.turn_manager.schedule_player_action(
+                    ActionType.MOVE, 
+                    target_pos=(new_x, new_y),
+                    dexterity=dexterity
+                )
+            
+            # Update movement timer to prevent moving too fast
+            self.movement_timer = current_time
     
     def toggle_auto_explore(self):
         """Toggle auto-explore mode on/off."""
@@ -757,17 +897,26 @@ class Game:
         
         if contents:
             for item in contents:
-                # Try to find a suitable slot and equip the item automatically
-                suitable_slot = self.find_suitable_equipment_slot(item)
-                if suitable_slot:
-                    success = self.player.character.equipment.equip_item(item, suitable_slot)
-                    if success:
-                        self.player.character._update_equipment_bonuses()
-                        self.add_to_log(f"Found and equipped: {item.name}", GREEN)
-                    else:
-                        self.add_to_log(f"Found: {item.name} (couldn't equip)", YELLOW)
+                # Add item to inventory instead of auto-equipping
+                if self.player.character.inventory.add_item(item):
+                    self.add_to_log(f"Found: {item.name} (added to inventory)", GREEN)
                 else:
-                    self.add_to_log(f"Found: {item.name} (no suitable slot)", YELLOW)
+                    # Inventory is full, try to auto-equip as fallback
+                    suitable_slot = self.find_suitable_equipment_slot(item)
+                    if suitable_slot:
+                        # Check if slot is empty or we can replace
+                        current_item = self.player.character.equipment.get_equipped_item(suitable_slot)
+                        if current_item is None:
+                            # Empty slot, equip directly
+                            success = self.player.character.equipment.equip_item(item, suitable_slot)
+                            if success:
+                                self.player.character._update_equipment_bonuses()
+                                self.add_to_log(f"Found and equipped: {item.name}", GREEN)
+                        else:
+                            # Slot occupied, could replace but let player decide
+                            self.add_to_log(f"Found: {item.name} (inventory full, press I to manage)", YELLOW)
+                    else:
+                        self.add_to_log(f"Found: {item.name} (inventory full, no slot available)", YELLOW)
         else:
             self.add_to_log("The chest is empty", GREY)
         
@@ -859,6 +1008,11 @@ class Game:
             # Render character sheet if toggled
             if self.show_character_sheet:
                 self.render_character_sheet()
+            
+            # Render interactive inventory if toggled
+            if self.show_interactive_inventory:
+                self.interactive_character_screen.render(
+                    self.screen, self.player.character, self.player.character.inventory)
         else:
             # Render menu/game over screens
             self.state_manager.render()

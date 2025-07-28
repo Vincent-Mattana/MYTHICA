@@ -215,6 +215,10 @@ class Character:
         self.stats = CharacterStats()
         self.equipment = Equipment()
         
+        # Inventory system - import here to avoid circular imports
+        from .inventory_system import Inventory
+        self.inventory = Inventory(max_items=30)
+        
         # Perk system integration
         self.perk_points = 0
         self.perk_bonuses = {}  # Store perk-based bonuses

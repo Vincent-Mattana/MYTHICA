@@ -26,12 +26,18 @@ class ConfigManager:
                 'move_southwest': 'K_KP1',
                 'move_southeast': 'K_KP3',
                 'character_sheet': 'K_c',
+                'inventory': 'K_i',
                 'wait_turn': 'K_KP5,K_PERIOD,K_SPACE',
-                'quit_game': 'K_ESCAPE'
+                'quit_game': 'K_ESCAPE',
+                'auto_explore': 'K_o',
+                'go_down_stairs': 'K_RIGHTBRACKET',
+                'go_up_stairs': 'K_LEFTBRACKET'
             },
             'Game': {
                 'diagonal_movement_enabled': 'true',
-                'numpad_movement_enabled': 'true'
+                'numpad_movement_enabled': 'true',
+                'continuous_movement_delay': '0.15',
+                'continuous_hold_delay': '0.3'
             },
             'Display': {
                 'show_damage_numbers': 'true',
@@ -119,6 +125,38 @@ class ConfigManager:
             return pressed_key in self.key_mappings[action]
         return False
     
+    def is_action_currently_pressed(self, action: str, keys_pressed) -> bool:
+        """Check if any key for the given action is currently being held down."""
+        if action in self.key_mappings:
+            for key_code in self.key_mappings[action]:
+                if keys_pressed[key_code]:
+                    return True
+        return False
+    
+    def get_movement_direction_for_action(self, action: str) -> tuple:
+        """Get movement direction for a specific action."""
+        movement_map = {
+            'move_north': (0, -1),
+            'move_south': (0, 1),
+            'move_west': (-1, 0),
+            'move_east': (1, 0),
+            'move_northwest': (-1, -1),
+            'move_northeast': (1, -1),
+            'move_southwest': (-1, 1),
+            'move_southeast': (1, 1)
+        }
+        
+        direction = movement_map.get(action, (0, 0))
+        
+        # Check if diagonal movement is enabled for diagonal actions
+        if abs(direction[0]) + abs(direction[1]) == 2:  # Diagonal movement
+            if self.get_bool_setting('Game', 'diagonal_movement_enabled', True):
+                return direction
+            else:
+                return (0, 0)  # No movement if diagonals disabled
+        
+        return direction
+    
     def get_movement_direction(self, pressed_key: int) -> tuple:
         """Get movement direction for a pressed key."""
         movement_map = {
@@ -159,6 +197,15 @@ class ConfigManager:
         try:
             if self.config.has_option(section, option):
                 return self.config.get(section, option)
+        except Exception as e:
+            print(f"Error reading {section}.{option}: {e}")
+        return default
+    
+    def get_float_setting(self, section: str, option: str, default: float = 0.0) -> float:
+        """Get a float setting from the config."""
+        try:
+            if self.config.has_option(section, option):
+                return self.config.getfloat(section, option)
         except Exception as e:
             print(f"Error reading {section}.{option}: {e}")
         return default

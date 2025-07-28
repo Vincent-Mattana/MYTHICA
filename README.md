@@ -4,7 +4,7 @@ A procedurally generated dungeon exploration game with minimap functionality, bu
 
 ## Features
 
-- **Grid-based movement**: Classic dungeon crawler movement system with 8-directional support
+- **Precise movement system**: Classic dungeon crawler movement with immediate single-key response and continuous movement when holding keys for sustained periods
 - **Turn-based combat**: Tactical action system where each action takes time
 - **Weapon timing**: Different weapons have unique attack speeds and reload times
 - **Configurable controls**: Rebindable keys via .ini file with numpad support
@@ -83,7 +83,9 @@ python main.py
 ## Controls
 
 ### Default Controls
-- **WASD** or **Arrow Keys**: 4-directional movement
+- **WASD** or **Arrow Keys**: 4-directional movement 
+  - *Single press*: Immediate one-step movement (precise control)
+  - *Hold 0.3+ seconds*: Continuous movement (fast exploration)
 - **Numpad 1-9**: 8-directional movement (diagonal support)
   ```
   7 8 9    ← Northwest, North, Northeast
@@ -91,6 +93,7 @@ python main.py
   1 2 3    ← Southwest, South, Southeast
   ```
 - **C**: Toggle character sheet display
+- **I**: Toggle interactive inventory screen
 - **O**: Toggle auto-explore mode (automatically explore unexplored areas)
 - **]**: Go down stairs (when standing on a staircase)
 - **[**: Go up stairs (when standing on a staircase)
@@ -98,10 +101,40 @@ python main.py
 - **ESC**: Exit the game
 - **F5**: Reload configuration file
 
+## Movement System
+
+### **Precision Control**
+Mythica features a sophisticated movement system designed for tactical gameplay:
+
+#### **Single Key Press (Immediate Response)**
+- **Tap any movement key**: Character moves exactly one step
+- **Instant response**: No delay, perfect for tactical positioning
+- **Combat positioning**: Ideal for careful placement during fights
+- **Exploration precision**: Step-by-step movement through dangerous areas
+
+#### **Continuous Movement (Hold Keys)**
+- **Hold any movement key for 0.3+ seconds**: Character moves continuously
+- **Prevents accidental activation**: Short taps won't trigger continuous movement
+- **Fast exploration**: Quickly traverse safe areas and long corridors
+- **Automatic stopping**: Stops at walls, enemies, or when key is released
+
+#### **Movement Timing**
+- **Hold delay**: 0.3 seconds before continuous movement begins
+- **Movement speed**: 0.15 seconds between steps during continuous movement
+- **Configurable**: Adjust `continuous_movement_delay` in config.ini
+- **Turn-based integration**: All movement respects the game's action timing system
+
+### **Smart Interaction**
+- **Combat detection**: Automatic attack when moving into enemies
+- **Inventory safety**: Movement disabled when inventory is open
+- **Auto-explore integration**: Manual movement cancels auto-explore
+- **Diagonal support**: Full 8-directional movement with numpad or key combinations
+
 ### Customizable Controls
 Controls can be customized by editing `config.ini`:
 - Multiple keys can be assigned to the same action
 - Diagonal movement can be enabled/disabled
+- Continuous movement speed can be adjusted (`continuous_movement_delay` in seconds)
 - Uses pygame key names (e.g., K_w, K_KP8, K_SPACE)
 
 ## Auto-Explore Feature
@@ -176,35 +209,154 @@ Controls can be customized by editing `config.ini`:
 ### Regeneration Messages
 - 🟢 **Green**: "Regenerated X HP" - Successful health regeneration during play
 
-## Treasure and Loot System
+## Interactive Inventory System
 
-### Treasure Chests
+### Overview
+Mythica features a comprehensive interactive inventory system that provides full control over your character's equipment and items. The system includes visual equipment management, inventory storage, and intuitive mouse-driven interactions.
+
+### Core Features
+- **Visual Equipment Slots**: See equipped items at a glance with intuitive slot arrangement
+- **30-Item Inventory**: Store unequipped items for later use or comparison
+- **Mouse Interaction**: Click to select, equip, and unequip items easily
+- **Item Tooltips**: Hover over items to see detailed information and stat bonuses
+- **Real-Time Stats**: Watch your character stats update as you change equipment
+- **Smart Auto-Sorting**: Items are organised by type with colour-coded indicators
+
+### Accessing the Inventory
+- **Press 'I'**: Open the interactive inventory screen
+- **Press 'C'**: Open the traditional character sheet (stats only)
+- **ESC**: Close any open screen and return to gameplay
+
+### Equipment Management
+
+#### **Equipment Slots Layout**
+```
+    [HEAD]     
+   [NECK]      
+[WEP1] [BODY] [WEP2]
+[RNG1] [LEGS] [RNG2]
+```
+
+#### **Equipment Interaction**
+- **Left Click Equipment Slot**: 
+  - Empty slot + selected inventory item → Equip the item
+  - Occupied slot → Unequip item to inventory (if space available)
+- **Hover Equipment Slot**: View equipped item details and bonuses
+
+#### **Slot Types**
+- **HEAD**: Helmets and headgear (+Constitution, protection)
+- **NECK**: Amulets and necklaces (+Luck, magical bonuses)
+- **BODY**: Armour and clothing (+Constitution, +Strength)
+- **LEGS**: Boots and leg protection (+Dexterity, movement)
+- **WEP1/WEP2**: Weapons and tools (+Strength, combat effectiveness)
+- **RNG1/RNG2**: Rings (+various stats, magical effects)
+
+### Inventory Management
+
+#### **Inventory Grid**
+- **6×8 Grid Layout**: 48 total slots for organised storage
+- **30 Item Capacity**: Reasonable limit encouraging strategic choices
+- **Visual Item Types**: Colour-coded dots indicate item categories
+- **Smart Selection**: Click to select items, double-click for quick actions
+
+#### **Inventory Interaction**
+- **Left Click Item**: Select item (highlighted in yellow)
+- **Left Click Selected Item**: Attempt to auto-equip to appropriate slot
+- **Hover Item**: View detailed tooltip with stats and description
+- **Click Equipment Slot**: Equip selected inventory item (if compatible)
+
+#### **Item Type Indicators**
+- 🔴 **Red**: Weapons (swords, axes, staff)
+- 🔵 **Blue**: Armour (chest protection)
+- 🟢 **Green**: Helmets (head protection)
+- 🟡 **Yellow**: Boots (foot protection)
+- 🟣 **Purple**: Rings (magical accessories)
+- 🔵 **Cyan**: Amulets (neck accessories)
+
+### Item Tooltips
+Detailed information appears when hovering over any item:
+- **Item Name**: Full descriptive name
+- **Item Type**: Category (Weapon, Armour, etc.)
+- **Description**: Flavour text describing the item
+- **Stat Bonuses**: Numerical bonuses to character stats
+- **Compatibility**: Which slots the item can be equipped to
+
+### Smart Equipment System
+
+#### **Auto-Equip Logic**
+When you select an inventory item and click an equipment slot:
+1. **Compatibility Check**: Ensures item can be equipped to that slot
+2. **Slot Availability**: Checks if slot is empty or needs replacement
+3. **Inventory Space**: Verifies space for unequipped items
+4. **Stat Updates**: Automatically recalculates character bonuses
+
+#### **Equipment Replacement**
+- **Empty Slot**: Item equips immediately
+- **Occupied Slot**: Current item moves to inventory, new item equips
+- **Full Inventory**: Warns user and suggests actions
+
+### Treasure and Loot Integration
+
+#### **Treasure Chests**
 - **Room Placement**: Each room has a 70% chance of containing 1-2 treasure chests
 - **Strategic Positioning**: Chests are placed away from room centers and entrances for exploration rewards
 - **Quality Scaling**: Chest contents improve with deeper dungeon levels (quality 1-5)
-- **Auto-Equip**: Found items are automatically equipped if suitable and if slots are available
+- **Inventory First**: Found items go to inventory instead of auto-equipping
 
-### Health Pickups
+#### **Health Pickups**
 - **Random Distribution**: Health potions scattered throughout dungeon floors (roughly 1 per 50 floor tiles)
 - **Instant Healing**: Restore 5-15 HP immediately when collected
 - **Strategic Value**: Provide crucial healing between combat encounters
 
-### Treasure Interaction
+#### **Treasure Interaction**
 - **Automatic Collection**: Simply walk over chests and pickups to interact with them
 - **One-Time Use**: Opened chests become empty floor tiles
 - **Level Persistence**: Treasure states are saved when moving between dungeon levels
 
-### Loot Quality by Depth
+#### **Loot Quality by Depth**
 - **Level 1-2**: Basic equipment with 1-2 stat bonuses
 - **Level 3-4**: Improved gear with 2-3 stat bonuses  
 - **Level 5+**: Exceptional equipment with 3+ stat bonuses and higher values
 
-### Treasure Messages
-- 🟢 **Green**: "Found and equipped: [Item]" - Automatic equipment upgrade
-- 🟡 **Yellow**: "Found: [Item] (inventory full)" - Item found but couldn't be equipped
+#### **Treasure Messages**
+- 🟢 **Green**: "Found: [Item] (added to inventory)" - Item successfully stored
+- 🟡 **Yellow**: "Found: [Item] (inventory full, press I to manage)" - Need inventory management
+- 🟢 **Green**: "Found and equipped: [Item]" - Auto-equipped to empty slot
 - 🟢 **Green**: "Picked up health potion! Healed X HP" - Successful healing
 - 🟡 **Yellow**: "Picked up health potion, but you're already at full health" - Potion collected at full HP
 - ⚪ **Grey**: "This chest is already empty" - Attempting to open an already opened chest
+
+### Inventory Strategy Tips
+
+#### **Early Game Management**
+- **Keep Variety**: Store different weapon types for tactical options
+- **Compare Stats**: Use tooltips to compare equipment bonuses
+- **Empty Slots First**: Equip items to empty slots before replacing
+
+#### **Mid Game Optimisation**
+- **Specialise Build**: Focus on items that enhance your character class
+- **Stat Stacking**: Look for items that boost your primary stats
+- **Keep Backups**: Store secondary weapons and armour for different situations
+
+#### **Late Game Mastery**
+- **Min-Max Stats**: Carefully optimise every equipment slot
+- **Situational Gear**: Keep specialised equipment for specific challenges
+- **Quality Focus**: Replace lower-quality items with better alternatives
+
+### Technical Features
+
+#### **Performance Optimised**
+- **Efficient Rendering**: Smooth 60 FPS even with full inventory
+- **Smart Updates**: Only recalculate stats when equipment changes
+- **Memory Management**: Intelligent caching of item data
+
+#### **User Experience**
+- **Intuitive Interface**: Learn the system in minutes
+- **Visual Feedback**: Clear indication of actions and results
+- **Error Prevention**: System prevents invalid equipment combinations
+- **Consistent Behaviour**: Predictable interactions across all item types
+
+The interactive inventory system transforms Mythica from a simple dungeon crawler into a deep character customisation experience. Take time to experiment with different equipment combinations to discover powerful builds!
 
 ## Level-Up and Perk System
 
