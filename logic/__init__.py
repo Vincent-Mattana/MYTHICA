@@ -37,6 +37,7 @@ from .config_manager import ConfigManager
 
 # Import sprite management system
 from .sprite_manager import sprite_manager, SpriteManager, SpriteType
+from .sprite_font import SpriteFont
 
 # Import inventory system
 from .inventory_system import Inventory, InteractiveCharacterScreen, InventoryAction
@@ -62,7 +63,7 @@ __all__ = [
     'ConfigManager',
     
     # Sprite System
-    'sprite_manager', 'SpriteManager', 'SpriteType',
+    'sprite_manager', 'SpriteManager', 'SpriteType', 'SpriteFont',
     
     # Inventory System
     'Inventory', 'InteractiveCharacterScreen', 'InventoryAction'

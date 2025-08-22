@@ -8,6 +8,8 @@ import pygame
 from enum import Enum
 from typing import Dict, Optional, Tuple
 from .character_system import Character, StatType, ItemGenerator, ItemType, EquipmentSlot
+from .sprite_font import SpriteFont
+from .sprite_manager import sprite_manager
 
 class GameState(Enum):
     MENU = "menu"
@@ -162,32 +164,45 @@ class GameStateManager:
         self.class_selection = 0
         self.game_over_selection = 0
         
-        # Fonts
-        self.title_font = pygame.font.Font(None, 72)
-        self.header_font = pygame.font.Font(None, 48)
-        self.text_font = pygame.font.Font(None, 36)
-        self.small_font = pygame.font.Font(None, 24)
+        # Sprite Fonts
+        self.title_font = SpriteFont(scale=2.0)  # Larger scale for title
+        self.header_font = SpriteFont(scale=1.0)  # Medium scale for headers
+        self.text_font = SpriteFont(scale=0.75)  # Normal scale for text
+        self.small_font = SpriteFont(scale=0.5)  # Smaller scale for details
         
         # Colors
         self.bg_color = (20, 20, 30)
         self.text_color = (255, 255, 255)
         self.selected_color = (255, 255, 100)
         self.accent_color = (100, 150, 255)
+        self.hover_color = (200, 200, 100)
+        
+        # Menu option rectangles for mouse interaction
+        self.menu_option_rects = []  # List of (rect, index) tuples for main menu
+        self.class_option_rects = []  # List of (rect, index) tuples for class selection
+        self.game_over_option_rects = []  # List of (rect, index) tuples for game over screen
     
     def handle_input(self, event) -> Tuple[bool, Optional[Character]]:
         """
         Handle input for current state.
         Returns (continue_game, character) where continue_game indicates if we should keep running.
         """
-        if event.type != pygame.KEYDOWN:
-            return True, None
-        
-        if self.current_state == GameState.MENU:
-            return self._handle_menu_input(event.key)
-        elif self.current_state == GameState.CLASS_SELECTION:
-            return self._handle_class_selection_input(event.key)
-        elif self.current_state == GameState.GAME_OVER:
-            return self._handle_game_over_input(event.key)
+        if event.type == pygame.KEYDOWN:
+            if self.current_state == GameState.MENU:
+                return self._handle_menu_input(event.key)
+            elif self.current_state == GameState.CLASS_SELECTION:
+                return self._handle_class_selection_input(event.key)
+            elif self.current_state == GameState.GAME_OVER:
+                return self._handle_game_over_input(event.key)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:  # Left click
+            if self.current_state == GameState.MENU:
+                return self._handle_menu_mouse_click(event.pos)
+            elif self.current_state == GameState.CLASS_SELECTION:
+                return self._handle_class_selection_mouse_click(event.pos)
+            elif self.current_state == GameState.GAME_OVER:
+                return self._handle_game_over_mouse_click(event.pos)
+        elif event.type == pygame.MOUSEMOTION:
+            self._handle_mouse_hover(event.pos)
         
         return True, None
     
@@ -256,94 +271,129 @@ class GameStateManager:
     
     def _render_main_menu(self):
         """Render the main menu."""
-        # Title
-        title = self.title_font.render("MYTHICA", True, self.accent_color)
-        title_rect = title.get_rect(center=(512, 150))
-        self.screen.blit(title, title_rect)
+        # Clear previous option rectangles
+        self.menu_option_rects = []
         
-        subtitle = self.text_font.render("Dungeon Crawler", True, self.text_color)
-        subtitle_rect = subtitle.get_rect(center=(512, 200))
-        self.screen.blit(subtitle, subtitle_rect)
+        # Title
+        title_rect = self.title_font.render_text_centered("MYTHICA", (512, 150), self.accent_color)
+        subtitle_rect = self.text_font.render_text_centered("DUNGEON CRAWLER", (512, 200), self.text_color)
         
         # Menu options
-        menu_options = ["New Game", "Quit"]
+        menu_options = ["NEW GAME", "QUIT"]
         start_y = 300
         
         for i, option in enumerate(menu_options):
             color = self.selected_color if i == self.menu_selection else self.text_color
-            text = self.header_font.render(option, True, color)
-            text_rect = text.get_rect(center=(512, start_y + i * 60))
-            self.screen.blit(text, text_rect)
+            text_rect = self.header_font.render_text_centered(option, (512, start_y + i * 60), color)
+            # Add padding to the clickable area
+            padded_rect = text_rect.inflate(40, 20)
+            self.menu_option_rects.append((padded_rect, i))
         
         # Controls
         controls = [
-            "Use W/S or Up/Down to navigate",
-            "Press Enter or Space to select",
-            "Press Escape to quit"
+            "USE W/S OR UP/DOWN TO NAVIGATE",
+            "CLICK OR PRESS ENTER/SPACE TO SELECT",
+            "PRESS ESCAPE TO QUIT"
         ]
         
         for i, control in enumerate(controls):
-            text = self.small_font.render(control, True, self.text_color)
-            text_rect = text.get_rect(center=(512, 500 + i * 25))
-            self.screen.blit(text, text_rect)
+            self.small_font.render_text_centered(control, (512, 500 + i * 25), self.text_color)
     
     def _render_class_selection(self):
         """Render the class selection screen."""
-        # Title
-        title = self.header_font.render("Choose Your Class", True, self.accent_color)
-        title_rect = title.get_rect(center=(512, 50))
-        self.screen.blit(title, title_rect)
+        # Clear previous option rectangles
+        self.class_option_rects = []
         
-        # Class list
+        # Draw dividing line
+        pygame.draw.line(self.screen, self.accent_color, (256, 0), (256, 768), 2)
+        
+        # Load portraits if not already loaded
+        if not hasattr(self, 'class_portraits'):
+            self.class_portraits = {}
+            portrait_sheet = pygame.image.load(str(sprite_manager.assets_path / "oryx_roguelike_2.0" / "oryx_roguelike_2.0" / "Interface_Portraits.png")).convert_alpha()
+            # Portrait positions in the sheet (x, y)
+            portrait_positions = {
+                CharacterClass.WARRIOR: (0, 0),    # First portrait - warrior
+                CharacterClass.ROGUE: (48, 0),     # Second portrait - rogue/thief
+                CharacterClass.MAGE: (96, 0),      # Third portrait - mage/wizard
+                CharacterClass.RANGER: (144, 0),   # Fourth portrait - ranger/archer
+                CharacterClass.CLERIC: (192, 0)    # Fifth portrait - cleric/priest
+            }
+            for char_class, pos in portrait_positions.items():
+                portrait = pygame.Surface((48, 48), pygame.SRCALPHA)
+                portrait.blit(portrait_sheet, (0, 0), (pos[0], pos[1], 48, 48))
+                self.class_portraits[char_class] = portrait
+
+        # Class list (left side)
         classes = list(CharacterClass)
-        start_y = 120
+        start_y = 100
+        spacing = 80  # Increased spacing to accommodate portraits
         
         for i, char_class in enumerate(classes):
+            y_pos = start_y + i * spacing
             color = self.selected_color if i == self.class_selection else self.text_color
-            text = self.text_font.render(char_class.value, True, color)
-            self.screen.blit(text, (50, start_y + i * 40))
+            
+            # Draw portrait
+            portrait = self.class_portraits[char_class]
+            portrait_rect = portrait.get_rect(midleft=(32, y_pos))
+            self.screen.blit(portrait, portrait_rect)
+            
+            # Draw class name
+            text_rect = self.text_font.render_text_centered(char_class.value.upper(), (160, y_pos), color)
+            # Add padding to the clickable area (include portrait area)
+            padded_rect = pygame.Rect(16, y_pos - 30, 224, 60)
+            self.class_option_rects.append((padded_rect, i))
         
-        # Selected class details
+        # Class details (right side)
         selected_class = classes[self.class_selection]
         class_data = CharacterClassData.CLASS_DEFINITIONS[selected_class]
+        right_x = 640  # Center point for right side
         
-        # Class description
-        desc_y = 150
-        desc_text = self.text_font.render(class_data['description'], True, self.text_color)
-        self.screen.blit(desc_text, (400, desc_y))
+        # Draw large portrait for selected class
+        portrait = self.class_portraits[selected_class]
+        large_portrait = pygame.transform.scale(portrait, (96, 96))
+        portrait_rect = large_portrait.get_rect(midtop=(right_x, 40))
+        self.screen.blit(large_portrait, portrait_rect)
+
+        # Class name and description
+        self.title_font.render_text_centered(selected_class.value.upper(), (right_x, 160), self.accent_color)
+        
+        # Description - split into two lines
+        desc_y = 220
+        desc = class_data['description'].upper()
+        words = desc.split()
+        mid = len(words) // 2
+        line1 = ' '.join(words[:mid])
+        line2 = ' '.join(words[mid:])
+        self.text_font.render_text_centered(line1, (right_x, desc_y), self.text_color)
+        self.text_font.render_text_centered(line2, (right_x, desc_y + 30), self.text_color)
         
         # Stats
-        stats_y = 200
-        stats_title = self.text_font.render("Starting Stats:", True, self.accent_color)
-        self.screen.blit(stats_title, (400, stats_y))
+        stats_y = 320
+        self.header_font.render_text_centered("STARTING STATS", (right_x, stats_y), self.accent_color)
+        stats_y += 50
         
-        for i, (stat, value) in enumerate(class_data['stats'].items()):
-            stat_text = f"{stat.value}: {value}"
-            text = self.small_font.render(stat_text, True, self.text_color)
-            self.screen.blit(text, (400, stats_y + 30 + i * 25))
+        # Stats in a clean layout
+        for stat, value in class_data['stats'].items():
+            stat_text = f"{stat.value} {value}"
+            self.text_font.render_text_centered(stat_text.upper(), (right_x, stats_y), self.text_color)
+            stats_y += 30
         
-        # Starting equipment
-        equip_y = 350
-        equip_title = self.text_font.render("Starting Equipment:", True, self.accent_color)
-        self.screen.blit(equip_title, (400, equip_y))
+        # Equipment
+        equip_y = stats_y + 40
+        self.header_font.render_text_centered("STARTING EQUIPMENT", (right_x, equip_y), self.accent_color)
+        equip_y += 50
         
-        for i, (item_type, item_name, bonuses) in enumerate(class_data['starting_items']):
-            text = self.small_font.render(f"• {item_name}", True, self.text_color)
-            self.screen.blit(text, (400, equip_y + 30 + i * 25))
-        
-        # Controls
-        controls = [
-            "W/S: Navigate classes",
-            "Enter: Select class",
-            "Escape: Back to menu"
-        ]
-        
-        for i, control in enumerate(controls):
-            text = self.small_font.render(control, True, self.text_color)
-            self.screen.blit(text, (50, 600 + i * 25))
+        # Equipment items in a clean layout
+        for item_type, item_name, bonuses in class_data['starting_items']:
+            self.text_font.render_text_centered(item_name.upper(), (right_x, equip_y), self.text_color)
+            equip_y += 30
     
     def _render_game_over(self):
         """Render the game over screen."""
+        # Clear previous option rectangles
+        self.game_over_option_rects = []
+        
         # Semi-transparent overlay
         overlay = pygame.Surface((1024, 768))
         overlay.set_alpha(200)
@@ -351,26 +401,81 @@ class GameStateManager:
         self.screen.blit(overlay, (0, 0))
         
         # Game Over title
-        title = self.title_font.render("GAME OVER", True, (255, 100, 100))
-        title_rect = title.get_rect(center=(512, 250))
-        self.screen.blit(title, title_rect)
+        self.title_font.render_text_centered("GAME OVER", (512, 250), (255, 100, 100))
         
         # Options
-        options = ["Restart", "Quit to Menu"]
+        options = ["RESTART", "QUIT TO MENU"]
         start_y = 350
         
         for i, option in enumerate(options):
             color = self.selected_color if i == self.game_over_selection else self.text_color
-            text = self.header_font.render(option, True, color)
-            text_rect = text.get_rect(center=(512, start_y + i * 60))
-            self.screen.blit(text, text_rect)
+            text_rect = self.header_font.render_text_centered(option, (512, start_y + i * 60), color)
+            # Add padding to the clickable area
+            padded_rect = text_rect.inflate(40, 20)
+            self.game_over_option_rects.append((padded_rect, i))
         
         # Controls
-        controls_text = self.small_font.render("W/S: Navigate, Enter: Select, Escape: Quit", 
-                                             True, self.text_color)
-        controls_rect = controls_text.get_rect(center=(512, 500))
-        self.screen.blit(controls_text, controls_rect)
+        self.small_font.render_text_centered(
+            "W/S: NAVIGATE * CLICK OR PRESS ENTER TO SELECT * ESCAPE: QUIT",
+            (512, 500),
+            self.text_color
+        )
     
+    def _handle_menu_mouse_click(self, pos: Tuple[int, int]) -> Tuple[bool, Optional[Character]]:
+        """Handle mouse clicks in the main menu."""
+        for rect, index in self.menu_option_rects:
+            if rect.collidepoint(pos):
+                self.menu_selection = index
+                if index == 0:  # New Game
+                    self.current_state = GameState.CLASS_SELECTION
+                    return True, None
+                elif index == 1:  # Quit
+                    return False, None
+        return True, None
+
+    def _handle_class_selection_mouse_click(self, pos: Tuple[int, int]) -> Tuple[bool, Optional[Character]]:
+        """Handle mouse clicks in the class selection screen."""
+        for rect, index in self.class_option_rects:
+            if rect.collidepoint(pos):
+                self.class_selection = index
+                classes = list(CharacterClass)
+                selected_class = classes[self.class_selection]
+                character = CharacterClassData.create_character(selected_class, "Adventurer")
+                self.current_state = GameState.PLAYING
+                return True, character
+        return True, None
+
+    def _handle_game_over_mouse_click(self, pos: Tuple[int, int]) -> Tuple[bool, Optional[Character]]:
+        """Handle mouse clicks in the game over screen."""
+        for rect, index in self.game_over_option_rects:
+            if rect.collidepoint(pos):
+                self.game_over_selection = index
+                if index == 0:  # Restart
+                    self.current_state = GameState.CLASS_SELECTION
+                    self.class_selection = 0
+                    return True, None
+                elif index == 1:  # Quit
+                    return False, None
+        return True, None
+
+    def _handle_mouse_hover(self, pos: Tuple[int, int]):
+        """Handle mouse hover effects for menu options."""
+        if self.current_state == GameState.MENU:
+            for rect, index in self.menu_option_rects:
+                if rect.collidepoint(pos):
+                    self.menu_selection = index
+                    break
+        elif self.current_state == GameState.CLASS_SELECTION:
+            for rect, index in self.class_option_rects:
+                if rect.collidepoint(pos):
+                    self.class_selection = index
+                    break
+        elif self.current_state == GameState.GAME_OVER:
+            for rect, index in self.game_over_option_rects:
+                if rect.collidepoint(pos):
+                    self.game_over_selection = index
+                    break
+
     def show_game_over(self):
         """Transition to game over state."""
         self.current_state = GameState.GAME_OVER

@@ -240,6 +240,10 @@ class Character:
     def set_character_class(self, character_class):
         """Set the character's class (for perk system)."""
         self.character_class = character_class
+        
+    def get_character_class(self):
+        """Get the character's class."""
+        return self.character_class
     
     def gain_experience(self, amount: int) -> List[str]:
         """Gain experience and check for level ups. Returns list of level up messages."""

@@ -18,7 +18,9 @@ from logic import (
     TurnManager, ActionCosts, ActionType,
     GameStateManager, CharacterClassData, CharacterClass,
     ConfigManager,
-    InteractiveCharacterScreen, Inventory, InventoryAction
+    InteractiveCharacterScreen, Inventory, InventoryAction,
+    sprite_manager, SpriteType,
+    SpriteFont
 )
 from logic.config_manager import config
 from logic.game_states import GameState
@@ -32,7 +34,7 @@ WINDOW_WIDTH = 1024
 WINDOW_HEIGHT = 768
 SIDEBAR_WIDTH = 250  # Width of the right sidebar
 GAME_AREA_WIDTH = WINDOW_WIDTH - SIDEBAR_WIDTH  # Game area takes remaining width
-GRID_SIZE = 32
+GRID_SIZE = 24  # Match Oryx sprite size
 DUNGEON_WIDTH = 50
 DUNGEON_HEIGHT = 50
 VIEWPORT_WIDTH = GAME_AREA_WIDTH // GRID_SIZE  # Viewport fits in game area
@@ -58,6 +60,8 @@ class CellType(Enum):
     STAIRCASE = 3
     CHEST = 4
     HP_PICKUP = 5
+    WATER = 6
+    ITEM = 7  # For items dropped on ground
 
 class Direction(Enum):
     NORTH = (0, -1)
@@ -155,6 +159,25 @@ class Game:
         self.camera = None
         self.minimap = None
         self.enemy_manager = None
+        
+        # Load character portraits
+        self.class_portraits = {}
+        portrait_sheet = pygame.image.load(str(sprite_manager.assets_path / "oryx_roguelike_2.0" / "oryx_roguelike_2.0" / "Interface_Portraits.png")).convert_alpha()
+        # Portrait positions in the sheet (x, y)
+        portrait_positions = {
+            CharacterClass.WARRIOR: (0, 0),    # First portrait - warrior
+            CharacterClass.ROGUE: (48, 0),     # Second portrait - rogue/thief
+            CharacterClass.MAGE: (96, 0),      # Third portrait - mage/wizard
+            CharacterClass.RANGER: (144, 0),   # Fourth portrait - ranger/archer
+            CharacterClass.CLERIC: (192, 0)    # Fifth portrait - cleric/priest
+        }
+        for char_class, pos in portrait_positions.items():
+            portrait = pygame.Surface((48, 48), pygame.SRCALPHA)
+            portrait.blit(portrait_sheet, (0, 0), (pos[0], pos[1], 48, 48))
+            self.class_portraits[char_class] = portrait
+            
+        # Load and cache the slash sprite
+        self.slash_sprite = pygame.image.load(str(sprite_manager.assets_path / "Classic Roguelike" / "classic_roguelike_sliced" / "classic_roguelike_134.png")).convert_alpha()
         
         # Game state
         self.explored = set()  # All tiles the player has ever seen
@@ -487,9 +510,14 @@ class Game:
         queue = deque([(start_x, start_y, 0)])  # (x, y, distance)
         visited = {(start_x, start_y)}
         
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+        # Only use orthogonal directions
+        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
         
-        while queue:
+        # Track the closest unexplored tile we've found
+        closest_target = None
+        closest_dist = float('inf')
+        
+        while queue and (closest_target is None or queue[0][2] < closest_dist):
             x, y, dist = queue.popleft()
             
             # Check each direction from current position
@@ -511,19 +539,20 @@ class Game:
                     
                 visited.add((new_x, new_y))
                 
-                # If this tile is unexplored, we found our target
-                if (new_x, new_y) not in self.explored:
-                    return (new_x, new_y)
+                # If this tile is unexplored and closer than our current best
+                if (new_x, new_y) not in self.explored and dist < closest_dist:
+                    # Found a closer unexplored tile
+                    closest_target = (new_x, new_y)
+                    closest_dist = dist
                 
-                # Otherwise, add to queue for further exploration
-                queue.append((new_x, new_y, dist + 1))
+                # Only add to queue if we haven't found a target or this path might lead to a closer one
+                if dist + 1 < closest_dist:
+                    queue.append((new_x, new_y, dist + 1))
         
-        # No unexplored areas found
-        return None
+        return closest_target
     
     def find_path_to_target(self, target_x: int, target_y: int) -> List[Tuple[int, int]]:
-        """Find shortest path to target using A* pathfinding."""
-        from collections import deque
+        """Find shortest path to target using optimized A* pathfinding."""
         import heapq
         
         start_x, start_y = self.player.x, self.player.y
@@ -532,39 +561,41 @@ class Game:
         if start_x == target_x and start_y == target_y:
             return []
         
-        # Priority queue: (f_score, g_score, x, y, path)
-        open_set = [(0, 0, start_x, start_y, [])]
-        visited = set()
+        # Priority queue: (f_score, x, y)
+        open_set = [(0, start_x, start_y)]
+        # Keep track of where we came from and the g_scores
+        came_from = {}
+        g_scores = {(start_x, start_y): 0}
         
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+        # Only use orthogonal directions for faster pathfinding
+        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
         
-        def heuristic(x1: int, y1: int, x2: int, y2: int) -> float:
+        def heuristic(x1: int, y1: int) -> int:
             """Manhattan distance heuristic."""
-            return abs(x1 - x2) + abs(y1 - y2)
+            return abs(x1 - target_x) + abs(y1 - target_y)
         
         while open_set:
-            f_score, g_score, x, y, path = heapq.heappop(open_set)
-            
-            if (x, y) in visited:
-                continue
-                
-            visited.add((x, y))
+            _, x, y = heapq.heappop(open_set)
+            current = (x, y)
             
             # Found the target
             if x == target_x and y == target_y:
+                # Reconstruct path
+                path = []
+                while current in came_from:
+                    path.append(current)
+                    current = came_from[current]
+                path.reverse()
                 return path
             
             # Explore neighbors
             for dx, dy in directions:
                 new_x, new_y = x + dx, y + dy
+                neighbor = (new_x, new_y)
                 
                 # Skip if out of bounds
                 if (new_x < 0 or new_x >= self.dungeon.width or 
                     new_y < 0 or new_y >= self.dungeon.height):
-                    continue
-                    
-                # Skip if already visited
-                if (new_x, new_y) in visited:
                     continue
                     
                 # Skip if not walkable
@@ -575,11 +606,15 @@ class Game:
                 if self.enemy_manager.get_enemy_at(new_x, new_y):
                     continue
                 
-                new_g_score = g_score + 1
-                new_f_score = new_g_score + heuristic(new_x, new_y, target_x, target_y)
-                new_path = path + [(new_x, new_y)]
+                # Calculate tentative g_score
+                tentative_g_score = g_scores[current] + 1
                 
-                heapq.heappush(open_set, (new_f_score, new_g_score, new_x, new_y, new_path))
+                if neighbor not in g_scores or tentative_g_score < g_scores[neighbor]:
+                    # This path is better than any previous one
+                    came_from[neighbor] = current
+                    g_scores[neighbor] = tentative_g_score
+                    f_score = tentative_g_score + heuristic(new_x, new_y)
+                    heapq.heappush(open_set, (f_score, new_x, new_y))
         
         # No path found
         return []
@@ -624,22 +659,21 @@ class Game:
         
         # Execute next move in path
         if self.auto_explore_path:
-            next_x, next_y = self.auto_explore_path.pop(0)
+            # Get next position from path
+            next_pos = self.auto_explore_path[0]
+            self.auto_explore_path = self.auto_explore_path[1:]  # Remove the step we're taking
             
-            # Double-check the move is still valid
-            if (self.dungeon.can_move_to(next_x, next_y) and 
-                not self.enemy_manager.get_enemy_at(next_x, next_y)):
-                
-                # Schedule movement action
-                dexterity = self.player.character.stats.get_total_stat(StatType.DEXTERITY)
-                self.turn_manager.schedule_player_action(
-                    ActionType.MOVE, 
-                    target_pos=(next_x, next_y),
-                    dexterity=dexterity
-                )
-            else:
-                # Path is blocked, recalculate
-                self.auto_explore_path = []
+            # Calculate movement direction
+            dx = next_pos[0] - self.player.x
+            dy = next_pos[1] - self.player.y
+            
+            # Schedule movement action
+            dexterity = self.player.character.stats.get_total_stat(StatType.DEXTERITY)
+            self.turn_manager.schedule_player_action(
+                ActionType.MOVE,
+                target_pos=next_pos,
+                dexterity=dexterity
+            )
     
     def is_on_staircase(self) -> bool:
         """Check if player is currently standing on a staircase."""
@@ -679,7 +713,8 @@ class Game:
             'player_pos': (self.player.x, self.player.y),
             'enemies': self.enemy_manager.enemies.copy() if hasattr(self.enemy_manager, 'enemies') else [],
             'chests': self.chests.copy(),
-            'hp_pickups': self.hp_pickups.copy()
+            'hp_pickups': self.hp_pickups.copy(),
+            'ground_items': self.ground_items.copy()
         }
         self.level_history[self.current_level] = current_state
         
@@ -789,6 +824,7 @@ class Game:
         # Restore treasure state
         self.chests = state.get('chests', {}).copy()
         self.hp_pickups = state.get('hp_pickups', set()).copy()
+        self.ground_items = state.get('ground_items', {}).copy()
         
         # Update camera and minimap
         self.camera = Camera()
@@ -843,23 +879,41 @@ class Game:
         print(f"Initialized {chest_count} chests and {pickup_count} HP pickups")
     
     def generate_chest_contents(self) -> List:
-        """Generate random contents for a chest."""
-        from logic.character_system import ItemGenerator, ItemType
+        """Generate random contents for a chest based on character's LUCK."""
+        from logic.character_system import ItemGenerator, ItemType, StatType
         
         contents = []
         
-        # 80% chance of having an item
-        if random.random() < 0.8:
-            # Generate a random item appropriate for the dungeon level
-            quality = min(5, max(1, self.current_level))
-            item_type = random.choice(list(ItemType))
-            item = ItemGenerator.generate_random_item(item_type, quality)
-            if item:
-                contents.append(item)
+        # Get character's luck stat (from player's character)
+        luck = self.player.character.stats.get_total_stat(StatType.LUCK) if self.player else 10  # Default to 10 if no player
         
-        # Small chance of additional item
-        if random.random() < 0.2:
-            quality = min(5, max(1, self.current_level))
+        # Base number of items (1-3) influenced by luck
+        # LUCK 10 (base): 60% 1 item, 30% 2 items, 10% 3 items
+        # LUCK 20 (high): 30% 1 item, 50% 2 items, 20% 3 items
+        # LUCK 30 (max): 10% 1 item, 60% 2 items, 30% 3 items
+        luck_factor = (luck - 10) / 20  # 0.0 at LUCK 10, 1.0 at LUCK 30
+        luck_factor = max(0.0, min(1.0, luck_factor))  # Clamp between 0 and 1
+        
+        # Adjust probabilities based on luck
+        one_item_chance = 0.6 - (0.5 * luck_factor)  # Decreases with luck
+        three_items_chance = 0.1 + (0.2 * luck_factor)  # Increases with luck
+        two_items_chance = 1.0 - one_item_chance - three_items_chance
+        
+        # Determine number of items
+        roll = random.random()
+        if roll < one_item_chance:
+            num_items = 1
+        elif roll < one_item_chance + two_items_chance:
+            num_items = 2
+        else:
+            num_items = 3
+        
+        # Generate items
+        for _ in range(num_items):
+            # Higher luck slightly improves item quality
+            quality_bonus = int(luck_factor * 2)  # 0-2 bonus to quality based on luck
+            quality = min(5, max(1, self.current_level + quality_bonus))
+            
             item_type = random.choice(list(ItemType))
             item = ItemGenerator.generate_random_item(item_type, quality)
             if item:
@@ -896,27 +950,37 @@ class Game:
         contents = chest['contents']
         
         if contents:
+            # Scatter items around the chest
             for item in contents:
-                # Add item to inventory instead of auto-equipping
-                if self.player.character.inventory.add_item(item):
-                    self.add_to_log(f"Found: {item.name} (added to inventory)", GREEN)
+                # Find a valid position to drop the item
+                drop_positions = []
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        if dx == 0 and dy == 0:
+                            continue  # Skip chest's position
+                        new_x, new_y = x + dx, y + dy
+                        if (0 <= new_x < self.dungeon.width and 
+                            0 <= new_y < self.dungeon.height and
+                            self.dungeon.get_cell(new_x, new_y) == CellType.FLOOR and
+                            not self.is_position_occupied(new_x, new_y)):
+                            drop_positions.append((new_x, new_y))
+                
+                if drop_positions:
+                    # Choose a random valid position
+                    drop_x, drop_y = random.choice(drop_positions)
+                    # Store item in the dungeon
+                    if not hasattr(self, 'ground_items'):
+                        self.ground_items = {}
+                    self.ground_items[(drop_x, drop_y)] = item
+                    # Mark cell as containing an item
+                    self.dungeon.grid[drop_y][drop_x] = CellType.ITEM
+                    self.add_to_log(f"A {item.name} falls to the ground!", YELLOW)
                 else:
-                    # Inventory is full, try to auto-equip as fallback
-                    suitable_slot = self.find_suitable_equipment_slot(item)
-                    if suitable_slot:
-                        # Check if slot is empty or we can replace
-                        current_item = self.player.character.equipment.get_equipped_item(suitable_slot)
-                        if current_item is None:
-                            # Empty slot, equip directly
-                            success = self.player.character.equipment.equip_item(item, suitable_slot)
-                            if success:
-                                self.player.character._update_equipment_bonuses()
-                                self.add_to_log(f"Found and equipped: {item.name}", GREEN)
-                        else:
-                            # Slot occupied, could replace but let player decide
-                            self.add_to_log(f"Found: {item.name} (inventory full, press I to manage)", YELLOW)
+                    # If no valid position found, add to inventory as fallback
+                    if self.player.character.inventory.add_item(item):
+                        self.add_to_log(f"Found: {item.name} (added to inventory)", GREEN)
                     else:
-                        self.add_to_log(f"Found: {item.name} (inventory full, no slot available)", YELLOW)
+                        self.add_to_log(f"Found: {item.name} (inventory full, item lost)", RED)
         else:
             self.add_to_log("The chest is empty", GREY)
         
@@ -951,6 +1015,18 @@ class Game:
             return possible_slots[0]
         
         return None
+    
+    def handle_item_pickup(self, x: int, y: int):
+        """Handle player picking up an item from the ground."""
+        item_pos = (x, y)
+        if item_pos in self.ground_items:
+            item = self.ground_items[item_pos]
+            if self.player.character.inventory.add_item(item):
+                self.add_to_log(f"Picked up: {item.name}", GREEN)
+                del self.ground_items[item_pos]
+                self.dungeon.grid[y][x] = CellType.FLOOR
+            else:
+                self.add_to_log("Inventory is full!", RED)
     
     def handle_hp_pickup(self, x: int, y: int):
         """Handle player picking up an HP pickup."""
@@ -1028,51 +1104,152 @@ class Game:
         for y in range(start_y, end_y):
             for x in range(start_x, end_x):
                 if (x, y) in self.explored:
-                    screen_x = (x - start_x) * GRID_SIZE
-                    screen_y = (y - start_y) * GRID_SIZE
+                    screen_x = int((x - start_x) * GRID_SIZE)
+                    screen_y = int((y - start_y) * GRID_SIZE)
                     
                     cell_type = self.dungeon.get_cell(x, y)
                     is_visible = (x, y) in self.visible
-                    colour = self.get_cell_colour(cell_type, is_visible)
                     
-                    pygame.draw.rect(self.screen, colour, 
-                                   (screen_x, screen_y, GRID_SIZE, GRID_SIZE))
+                    # Get appropriate sprite based on cell type
+                    sprite = None
+                    if cell_type == CellType.FLOOR:
+                        sprite = sprite_manager.load_oryx_sprite("floor_stone", SpriteType.TILES)
+                        if sprite:
+                            # Create a copy to tint
+                            tinted_sprite = sprite.copy()
+                            # Apply green tint for level 1, brown tint for level 2+
+                            if self.current_level == 1:
+                                tinted_sprite.fill((0, 255, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)  # Green for grass
+                            else:
+                                tinted_sprite.fill((139, 69, 19, 128), special_flags=pygame.BLEND_RGBA_MULT)  # Brown for dirt/cave
+                            sprite = tinted_sprite
+                    elif cell_type == CellType.WATER:
+                        sprite = sprite_manager.load_oryx_sprite("water", SpriteType.TILES)
+                        if sprite:
+                            # Create a copy to tint
+                            tinted_sprite = sprite.copy()
+                            # Apply blue tint
+                            tinted_sprite.fill((0, 0, 255, 128), special_flags=pygame.BLEND_RGBA_MULT)
+                            sprite = tinted_sprite
+                    elif cell_type == CellType.WALL:
+                        if self.current_level == 1:
+                            # Level 1: Trees with dark green tint
+                            sprite = sprite_manager.load_oryx_sprite("tree", SpriteType.TILES)
+                            if sprite:
+                                tinted_sprite = sprite.copy()
+                                tinted_sprite.fill((0, 100, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)
+                                sprite = tinted_sprite
+                        else:
+                            # Level 2+: Hash symbol with dark brown tint
+                            sprite = sprite_manager.load_oryx_sprite("hash", SpriteType.TILES)
+                            if sprite:
+                                tinted_sprite = sprite.copy()
+                                tinted_sprite.fill((65, 40, 15, 128), special_flags=pygame.BLEND_RGBA_MULT)  # Very dark brown
+                                sprite = tinted_sprite
+                    elif cell_type == CellType.DOOR:
+                        sprite = sprite_manager.load_oryx_sprite("door_wooden", SpriteType.TILES)
+                    elif cell_type == CellType.STAIRCASE:
+                        sprite = sprite_manager.load_oryx_sprite("stairs_down", SpriteType.TILES)
+                    elif cell_type == CellType.CHEST:
+                        sprite = sprite_manager.load_oryx_sprite("chest", SpriteType.TILES)
+                    elif cell_type == CellType.HP_PICKUP:
+                        sprite = sprite_manager.load_oryx_sprite("health_potion", SpriteType.TILES)
+                        if sprite:
+                            # Create a copy to tint
+                            tinted_sprite = sprite.copy()
+                            # Apply red tint
+                            tinted_sprite.fill((255, 0, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)
+                            sprite = tinted_sprite
+                    elif cell_type == CellType.ITEM:
+                        # Get item at this position
+                        item = self.ground_items.get((x, y))
+                        if item:
+                            # Choose sprite based on item type
+                            sprite_map = {
+                                'Sword': 'sword',
+                                'Axe': 'axe',
+                                'Shield': 'shield',
+                                'Staff': 'staff',
+                                'Bow': 'bow',
+                                'Robe': 'robe',
+                                'Ring': 'ring',
+                                'Helmet': 'helmet'
+                            }
+                            sprite_name = sprite_map.get(item.name.split()[0], 'sword')  # Default to sword if unknown
+                            sprite = sprite_manager.load_oryx_sprite(sprite_name, SpriteType.TILES)
+                            if sprite:
+                                # Create a copy to tint gold
+                                tinted_sprite = sprite.copy()
+                                # Apply gold tint (RGB: 255, 215, 0)
+                                tinted_sprite.fill((255, 215, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)
+                                sprite = tinted_sprite
                     
-                    # Draw grid lines (dimmer for non-visible areas)
-                    grid_colour = DARK_GREY if is_visible else (32, 32, 32)
-                    pygame.draw.rect(self.screen, grid_colour, 
-                                   (screen_x, screen_y, GRID_SIZE, GRID_SIZE), 1)
-                    
-                    # Add a subtle overlay for non-visible explored areas
-                    if not is_visible:
-                        overlay = pygame.Surface((GRID_SIZE, GRID_SIZE))
-                        overlay.set_alpha(100)  # Semi-transparent
-                        overlay.fill(BLACK)
-                        self.screen.blit(overlay, (screen_x, screen_y))
+                    if sprite:
+                        # Render the sprite
+                        self.screen.blit(sprite, (screen_x, screen_y))
+                        
+                        # Add a subtle overlay for non-visible explored areas
+                        if not is_visible:
+                            overlay = pygame.Surface((GRID_SIZE, GRID_SIZE))
+                            overlay.set_alpha(150)  # Semi-transparent
+                            overlay.fill(BLACK)
+                            self.screen.blit(overlay, (screen_x, screen_y))
     
     def render_player(self):
         # Calculate player position on screen
         start_x = max(0, self.camera.x - VIEWPORT_WIDTH // 2)
         start_y = max(0, self.camera.y - VIEWPORT_HEIGHT // 2)
         
-        screen_x = (self.player.x - start_x) * GRID_SIZE
-        screen_y = (self.player.y - start_y) * GRID_SIZE
+        screen_x = int((self.player.x - start_x) * GRID_SIZE)
+        screen_y = int((self.player.y - start_y) * GRID_SIZE)
         
-        # Draw player as a yellow circle
+        # Calculate center position for the tile
         center_x = screen_x + GRID_SIZE // 2
         center_y = screen_y + GRID_SIZE // 2
         
+        # Use the @ symbol sprite for the player
+        sprite = sprite_manager.load_oryx_sprite("player", SpriteType.TILES)
+        
+        if sprite:
+            # Create a copy to tint
+            tinted_sprite = sprite.copy()
+            # Apply yellow tint
+            tinted_sprite.fill((255, 255, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)
+            
+            # Center the sprite in the tile
+            sprite_rect = tinted_sprite.get_rect(center=(center_x, center_y))
+            self.screen.blit(tinted_sprite, sprite_rect)
+        
         # Flash red if recently damaged
-        player_colour = YELLOW
         if hasattr(self.player.character, 'last_damage_time') and self.player.character.last_damage_time < 0.5:
             self.player.character.last_damage_time += 0.016  # Assuming 60 FPS
-            player_colour = RED
-        
-        pygame.draw.circle(self.screen, player_colour, (center_x, center_y), GRID_SIZE // 3)
+            flash_surface = pygame.Surface((GRID_SIZE, GRID_SIZE), pygame.SRCALPHA)
+            flash_surface.fill((255, 0, 0, 150))  # Red with alpha
+            flash_rect = flash_surface.get_rect(center=(center_x, center_y))
+            self.screen.blit(flash_surface, flash_rect)
     
     def render_ui(self):
         """Render the main UI - now just calls sidebar rendering."""
         self.render_sidebar()
+    
+    def render_text(self, text: str, font_size: str, color: tuple, x: int, y: int) -> int:
+        """
+        Render text using sprite font and return the new y position.
+        
+        Args:
+            text: Text to render
+            font_size: One of 'title', 'header', 'text', or 'small'
+            color: RGB color tuple
+            x: X position
+            y: Y position
+            
+        Returns:
+            New Y position after rendering
+        """
+        surface = self.sprite_fonts[font_size].render_text(text.upper(), color)
+        rect = surface.get_rect(topleft=(x, y))
+        self.screen.blit(surface, rect)
+        return y + rect.height
     
     def render_sidebar(self):
         """Render the game information sidebar."""
@@ -1081,92 +1258,117 @@ class Game:
         pygame.draw.rect(self.screen, (30, 30, 40), sidebar_rect)  # Dark blue-grey background
         pygame.draw.line(self.screen, WHITE, (GAME_AREA_WIDTH, 0), (GAME_AREA_WIDTH, WINDOW_HEIGHT), 2)
         
-        # Fonts
-        title_font = pygame.font.Font(None, 28)
-        header_font = pygame.font.Font(None, 24)
-        text_font = pygame.font.Font(None, 20)
-        small_font = pygame.font.Font(None, 18)
+        # Sprite Fonts
+        if not hasattr(self, 'sprite_fonts'):
+            self.sprite_fonts = {
+                'title': SpriteFont(scale=1.5),  # Larger scale for title
+                'header': SpriteFont(scale=1.0),  # Medium scale for headers
+                'text': SpriteFont(scale=0.75),   # Normal scale for text
+                'small': SpriteFont(scale=0.5)    # Smaller scale for details
+            }
         
         # Starting positions
         x = GAME_AREA_WIDTH + 10
         y = 10
-        line_height = 18  # More compact
-        section_spacing = 10  # Tighter spacing
+        section_spacing = 20  # Increased spacing between sections
         
-        # Game title and dungeon level
-        title_text = title_font.render("Mythica", True, YELLOW)
-        self.screen.blit(title_text, (x, y))
-        y += 25
-        
-        level_text = text_font.render(f"Dungeon Level: {self.current_level}", True, YELLOW)
-        self.screen.blit(level_text, (x, y))
-        y += line_height + section_spacing
+        # Create an extra small font for logs
+        if not hasattr(self, 'log_font'):
+            self.log_font = SpriteFont(scale=0.35)  # Even smaller than small font
         
         # === PLAYER INFO SECTION ===
         if hasattr(self.player, 'character'):
             char_data = self.player.character.get_character_summary()
             
-            # Player name and level
-            player_text = header_font.render(f"{char_data['name']}", True, WHITE)
-            self.screen.blit(player_text, (x, y))
-            y += 20
+            # Character portrait at the top (25% larger)
+            portrait = self.class_portraits[self.player.character.character_class]
+            scaled_portrait = pygame.transform.scale(portrait, (60, 60))  # 48 * 1.25 = 60
+            portrait_rect = scaled_portrait.get_rect(topleft=(x, y))
+            self.screen.blit(scaled_portrait, portrait_rect)
+            y += 60 + 10  # Portrait height + small gap
             
-            level_text = text_font.render(f"Level {char_data['level']}", True, WHITE)
-            self.screen.blit(level_text, (x, y))
-            y += line_height + section_spacing
+            # Player name and level
+            y = self.render_text("ADVENTURER", 'text', WHITE, x, y)
+            y = self.render_text(f"LEVEL {char_data['level']}", 'header', WHITE, x, y)
+            y += section_spacing
             
             # Health text
             current_hp, max_hp = char_data['hp']
             hp_color = GREEN if current_hp > max_hp * 0.7 else YELLOW if current_hp > max_hp * 0.3 else RED
-            hp_text = header_font.render(f"HP: {current_hp}/{max_hp}", True, hp_color)
-            self.screen.blit(hp_text, (x, y))
-            y += line_height + 5
+            y = self.render_text("HP", 'text', hp_color, x, y)
             
-            # Health bar
-            bar_width = SIDEBAR_WIDTH - 40  # Fit within sidebar with margins
-            bar_height = 12
-            HealthBar.draw_health_bar(self.screen, x, y, bar_width, bar_height, current_hp, max_hp)
+            # HP numbers with slash
+            hp_text = f"{current_hp}/{max_hp}"  # Removed spaces around slash since we have built-in spacing
+            hp_surface = self.sprite_fonts['header'].render_text(hp_text, hp_color)
+            hp_rect = hp_surface.get_rect(topleft=(x, y))
+            self.screen.blit(hp_surface, hp_rect)
+            y += 24  # Height of header font
+            
+            # Health bar (no numbers)
+            bar_width = SIDEBAR_WIDTH - 20  # Wider health bar
+            bar_height = 8  # Thinner health bar
+            # Draw background
+            bar_rect = pygame.Rect(x, y, bar_width, bar_height)
+            pygame.draw.rect(self.screen, RED, bar_rect)
+            # Draw health portion
+            health_width = int(bar_width * (current_hp / max_hp))
+            health_rect = pygame.Rect(x, y, health_width, bar_height)
+            pygame.draw.rect(self.screen, hp_color, health_rect)
+            y += bar_height + 10  # Small gap before XP bar
+            
+            # XP bar
+            from logic.perk_system import PerkSystem
+            perk_system = PerkSystem()
+            current_exp = char_data['experience']
+            next_level_exp = perk_system.calculate_experience_required(char_data['level'] + 1)
+            
+            # XP text
+            y = self.render_text("XP", 'text', YELLOW, x, y)
+            
+            # XP numbers
+            xp_text = f"{current_exp}/{next_level_exp}"
+            xp_surface = self.sprite_fonts['header'].render_text(xp_text, YELLOW)
+            xp_rect = xp_surface.get_rect(topleft=(x, y))
+            self.screen.blit(xp_surface, xp_rect)
+            y += 24  # Height of header font
+            
+            # XP bar
+            xp_bar_rect = pygame.Rect(x, y, bar_width, bar_height)
+            pygame.draw.rect(self.screen, (100, 100, 0), xp_bar_rect)  # Dark gold background
+            
+            # Calculate XP progress
+            xp_progress = current_exp / next_level_exp if next_level_exp > 0 else 1.0
+            xp_width = int(bar_width * xp_progress)
+            xp_fill_rect = pygame.Rect(x, y, xp_width, bar_height)
+            pygame.draw.rect(self.screen, YELLOW, xp_fill_rect)  # Bright gold fill
+            # Draw border
+            pygame.draw.rect(self.screen, WHITE, bar_rect, 1)
             y += bar_height + section_spacing
         
-        # === TURN INFORMATION ===
-        turn_header = header_font.render("Turn Info", True, YELLOW)
-        self.screen.blit(turn_header, (x, y))
-        y += line_height
-        
-        if hasattr(self, 'turn_manager') and self.turn_manager:
-            turn_info = self.turn_manager.get_turn_info()
-            turn_text = text_font.render(f"Turn: {turn_info['turn_number']}", True, WHITE)
-            self.screen.blit(turn_text, (x, y))
-            y += line_height
-            
-            time_text = text_font.render(f"Time: {turn_info['current_time']:.1f}s", True, WHITE)
-            self.screen.blit(time_text, (x, y))
-            y += line_height
-        
-        # Player status
+        # Player status (only show DEAD)
         if self.player_is_dead:
-            status_colour = RED
             status_text = "DEAD"
-        elif hasattr(self, 'turn_manager') and self.turn_manager and self.turn_manager.can_player_act():
-            status_colour = GREEN
-            status_text = "Your Turn"
-        else:
-            status_colour = YELLOW  
-            status_text = "Processing..."
-        
-        player_status = text_font.render(status_text, True, status_colour)
-        self.screen.blit(player_status, (x, y))
-        y += line_height + section_spacing
+            status_surface = self.sprite_fonts['text'].render_text(status_text, RED)
+            status_rect = status_surface.get_rect(topleft=(x, y))
+            self.screen.blit(status_surface, status_rect)
+            y += 30  # Fixed spacing after status
         
         y += section_spacing
         
         # === GAME LOG SECTION ===
-        log_header = header_font.render("Recent Events", True, YELLOW)
-        self.screen.blit(log_header, (x, y))
-        y += line_height + 2
+        y += section_spacing  # Extra space before log section
+        y = self.render_text("LOG", 'header', YELLOW, x, y)
+        y += section_spacing  # More space after the title
+        
+        # Calculate available height for log entries
+        available_height = WINDOW_HEIGHT - MINIMAP_SIZE - 20 - y  # 20px buffer
         
         # Render game log entries
         for message, color in self.game_log:
+            # Stop if we're getting too close to the minimap
+            if y > WINDOW_HEIGHT - MINIMAP_SIZE - 40:  # 40px buffer
+                break
+                
             # Wrap long messages if needed
             if len(message) > 25:  # Approximate character limit for sidebar width
                 words = message.split(' ')
@@ -1183,13 +1385,17 @@ class Game:
                     lines.append(current_line.strip())
                 
                 for line in lines:
-                    log_text = small_font.render(line, True, color)
-                    self.screen.blit(log_text, (x, y))
-                    y += line_height - 6  # Compact spacing for log
+                    if y > WINDOW_HEIGHT - MINIMAP_SIZE - 40:
+                        break
+                    log_surface = self.log_font.render_text(line, color)
+                    log_rect = log_surface.get_rect(topleft=(x, y))
+                    self.screen.blit(log_surface, log_rect)
+                    y += 10  # Tighter spacing for smaller font
             else:
-                log_text = small_font.render(message, True, color)
-                self.screen.blit(log_text, (x, y))
-                y += line_height - 6  # Compact spacing for log
+                log_surface = self.log_font.render_text(message, color)
+                log_rect = log_surface.get_rect(topleft=(x, y))
+                self.screen.blit(log_surface, log_rect)
+                y += 10  # Tighter spacing for smaller font
         
         # === MINIMAP ===
         # Always render minimap at bottom of sidebar
@@ -1265,7 +1471,7 @@ class Game:
             self.player.move(new_x - self.player.x, new_y - self.player.y)
             self.update_visibility()
             
-            # Check for interactions with chests and HP pickups
+            # Check for interactions with chests, items, and HP pickups
             cell_type = self.dungeon.get_cell(new_x, new_y)
             print(f"Player moved to ({new_x}, {new_y}), cell type: {cell_type}")
             if cell_type == CellType.CHEST:
@@ -1274,6 +1480,9 @@ class Game:
             elif cell_type == CellType.HP_PICKUP:
                 print("Triggering HP pickup interaction")
                 self.handle_hp_pickup(new_x, new_y)
+            elif cell_type == CellType.ITEM:
+                print("Triggering item pickup")
+                self.handle_item_pickup(new_x, new_y)
             elif cell_type == CellType.STAIRCASE:
                 print("Player is now standing on a staircase! Press '>' to go down or '<' to go up.")
                 self.add_to_log("Standing on stairs. Press '>' to descend or '<' to ascend", YELLOW)
@@ -1505,33 +1714,47 @@ class Game:
         for enemy in self.enemy_manager.get_living_enemies():
             # Only render if enemy is in visible area
             if (enemy.x, enemy.y) in self.visible:
-                screen_x = (enemy.x - start_x) * GRID_SIZE
-                screen_y = (enemy.y - start_y) * GRID_SIZE
+                screen_x = int((enemy.x - start_x) * GRID_SIZE)
+                screen_y = int((enemy.y - start_y) * GRID_SIZE)
                 
                 # Skip if enemy is off screen
                 if (screen_x < -GRID_SIZE or screen_x > WINDOW_WIDTH or 
                     screen_y < -GRID_SIZE or screen_y > WINDOW_HEIGHT - 150):
                     continue
                 
-                center_x = screen_x + GRID_SIZE // 2
-                center_y = screen_y + GRID_SIZE // 2
+                # Get enemy sprite based on type
+                enemy_sprite_map = {
+                    EnemyType.CHICKEN: "chicken",
+                    EnemyType.FROG: "frog",
+                    EnemyType.SNAKE: "snake",
+                    EnemyType.BIRD: "bird",
+                    EnemyType.SPIDER: "spider",
+                    EnemyType.GOBLIN: "goblin"  # Added goblin sprite mapping
+                }
                 
-                # Choose enemy colour based on type
-                enemy_colour = self.get_enemy_colour(enemy.enemy_type)
+                sprite_name = enemy_sprite_map.get(enemy.enemy_type, "goblin")  # Default to goblin instead of rat
+                sprite = sprite_manager.load_oryx_sprite(sprite_name, SpriteType.TILES)
                 
-                # Flash red if recently damaged
-                if enemy.damage_flash > 0:
-                    enemy_colour = RED
-                
-                # Draw enemy
-                pygame.draw.circle(self.screen, enemy_colour, (center_x, center_y), GRID_SIZE // 3)
-                
-                # Draw enemy initial on top
-                font = pygame.font.Font(None, 20)
-                initial = enemy.enemy_type.value[0]  # First letter of enemy type
-                text = font.render(initial, True, WHITE)
-                text_rect = text.get_rect(center=(center_x, center_y))
-                self.screen.blit(text, text_rect)
+                if sprite:
+                    # Create a copy for tinting if needed
+                    if enemy.enemy_type == EnemyType.GOBLIN:
+                        # Apply bright green tint for goblins
+                        tinted_sprite = sprite.copy()
+                        tinted_sprite.fill((0, 255, 0, 255), special_flags=pygame.BLEND_RGBA_MULT)  # Bright Green
+                        sprite = tinted_sprite
+
+                    # Center the sprite in the tile
+                    center_x = screen_x + GRID_SIZE // 2
+                    center_y = screen_y + GRID_SIZE // 2
+                    sprite_rect = sprite.get_rect(center=(center_x, center_y))
+                    self.screen.blit(sprite, sprite_rect)
+                    
+                    # Flash red if recently damaged
+                    if enemy.damage_flash > 0:
+                        flash_surface = pygame.Surface(sprite.get_size(), pygame.SRCALPHA)
+                        flash_surface.fill((255, 0, 0, 150))  # Red with alpha
+                        flash_rect = flash_surface.get_rect(center=(center_x, center_y))
+                        self.screen.blit(flash_surface, flash_rect)
     
     def get_enemy_colour(self, enemy_type: EnemyType) -> Tuple[int, int, int]:
         """Get colour for enemy based on type."""
@@ -1547,29 +1770,8 @@ class Game:
     
     def render_health_bars(self):
         """Render health bars for visible enemies."""
-        # Enemy health bars (above enemies when damaged or low HP)
-        start_x = max(0, self.camera.x - VIEWPORT_WIDTH // 2)
-        start_y = max(0, self.camera.y - VIEWPORT_HEIGHT // 2)
-        
-        for enemy in self.enemy_manager.get_living_enemies():
-            if (enemy.x, enemy.y) in self.visible:
-                # Always show health bar for visible enemies
-                screen_x = (enemy.x - start_x) * GRID_SIZE
-                screen_y = (enemy.y - start_y) * GRID_SIZE
-                
-                # Skip if enemy is off screen (within game area)
-                if (screen_x < -GRID_SIZE or screen_x > GAME_AREA_WIDTH or 
-                    screen_y < -GRID_SIZE or screen_y > WINDOW_HEIGHT):
-                    continue
-                
-                # Draw small health bar above enemy
-                bar_width = GRID_SIZE
-                bar_height = 4
-                bar_x = screen_x
-                bar_y = screen_y - 8
-                
-                HealthBar.draw_health_bar(self.screen, bar_x, bar_y, bar_width, bar_height,
-                                        enemy.hp, enemy.max_hp, show_text=False, is_enemy=True)
+        # Enemy health bars removed for cleaner look
+        pass
     
     def handle_combat(self, player, enemy):
         """Handle combat between player and enemy."""
@@ -1757,6 +1959,7 @@ class Game:
         # Reset treasure system
         self.chests = {}
         self.hp_pickups = set()
+        self.ground_items = {}  # Initialize ground items tracking
         
         # Initialize turn-based system
         self.turn_manager = TurnManager()
@@ -1800,12 +2003,11 @@ class Game:
     def get_enemy_weapon_name(self, enemy_type: EnemyType) -> str:
         """Get the weapon name for an enemy type."""
         weapon_names = {
-            EnemyType.RAT: "Claws",
-            EnemyType.GOBLIN: "Rusty Dagger", 
-            EnemyType.SKELETON: "Bone Sword",
-            EnemyType.SPIDER: "Fangs",
-            EnemyType.ORC: "War Axe",
-            EnemyType.TROLL: "Giant Club"
+            EnemyType.CHICKEN: "Beak",
+            EnemyType.FROG: "Tongue",
+            EnemyType.SNAKE: "Fangs",
+            EnemyType.BIRD: "Talons",
+            EnemyType.SPIDER: "Fangs"
         }
         return weapon_names.get(enemy_type, "Claws")
     
@@ -1823,7 +2025,8 @@ class Player:
     def __init__(self, x: int, y: int):
         self.x = x
         self.y = y
-        self.character = Character("Adventurer")
+        # Create character with default class (Warrior)
+        self.character = CharacterClassData.create_character(CharacterClass.WARRIOR, "Adventurer")
     
     def move(self, dx: int, dy: int):
         self.x += dx
@@ -1865,6 +2068,9 @@ class Dungeon:
         rooms = []
         max_rooms = 15
         room_attempts = 50
+        
+        # Add some water features (ponds and streams)
+        self.add_water_features()
         
         for _ in range(room_attempts):
             if len(rooms) >= max_rooms:
@@ -1917,17 +2123,120 @@ class Dungeon:
             for x in range(min(x1, x2), max(x1, x2) + 1):
                 self.grid[y2][x] = CellType.FLOOR
     
-    def can_move_to(self, x: int, y: int) -> bool:
+    def can_move_to(self, x: int, y: int, can_swim: bool = False) -> bool:
         """Check if the player can move to the given position."""
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return False
-        return self.grid[y][x] in [CellType.FLOOR, CellType.DOOR, CellType.STAIRCASE, CellType.CHEST, CellType.HP_PICKUP]
+        cell = self.grid[y][x]
+        if cell == CellType.WATER:
+            return can_swim
+        return cell in [CellType.FLOOR, CellType.DOOR, CellType.STAIRCASE, CellType.CHEST, CellType.HP_PICKUP, CellType.ITEM]
     
     def get_cell(self, x: int, y: int) -> CellType:
         """Get the cell type at the given position."""
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
             return CellType.WALL
         return self.grid[y][x]
+        
+    def add_water_features(self):
+        """Add water features like ponds and streams to the dungeon."""
+        if self.level == 1:  # Natural water features for forest level
+            self._add_forest_water_features()
+        elif self.level == 2:  # Underground water for cavern level
+            self._add_cavern_water_features()
+        # Level 3 has no water (goblin warren)
+    
+    def _add_forest_water_features(self):
+        """Add natural forest water features - meandering streams and natural ponds."""
+        feature_type = random.choice(['stream', 'ponds'])
+        
+        if feature_type == 'stream':
+            # Create one major meandering stream
+            # Start from a random edge
+            if random.choice([True, False]):
+                # West to East
+                x = 2
+                y = random.randint(10, self.height - 10)
+                dx = 1
+                dy = 0
+            else:
+                # North to South
+                x = random.randint(10, self.width - 10)
+                y = 2
+                dx = 0
+                dy = 1
+            
+            # Create meandering path
+            points = []
+            while 0 < x < self.width - 1 and 0 < y < self.height - 1:
+                points.append((x, y))
+                
+                # Randomly adjust direction while maintaining general flow
+                if random.random() < 0.3:  # 30% chance to meander
+                    if dx != 0:  # Moving horizontally
+                        y += random.choice([-1, 0, 0, 1])  # Bias towards straight
+                    else:  # Moving vertically
+                        x += random.choice([-1, 0, 0, 1])  # Bias towards straight
+                
+                x += dx
+                y += dy
+            
+            # Widen the stream and add some natural variation
+            for px, py in points:
+                # Main stream
+                self.grid[py][px] = CellType.WATER
+                
+                # Add some width variation
+                if random.random() < 0.7:  # 70% chance for width at each point
+                    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nx, ny = px + dx, py + dy
+                        if (0 < nx < self.width - 1 and 0 < ny < self.height - 1 and
+                            self.grid[ny][nx] != CellType.WATER):
+                            if random.random() < 0.3:  # 30% chance for each adjacent tile
+                                self.grid[ny][nx] = CellType.WATER
+        
+        else:  # ponds
+            # Create 2-3 natural ponds with irregular shapes
+            num_ponds = random.randint(2, 3)
+            for _ in range(num_ponds):
+                # Choose pond center away from edges
+                center_x = random.randint(10, self.width - 10)
+                center_y = random.randint(10, self.height - 10)
+                
+                # Create irregular pond shape using cellular automata-like approach
+                pond_tiles = set([(center_x, center_y)])
+                size = random.randint(15, 25)  # Target pond size
+                
+                while len(pond_tiles) < size:
+                    # Expand from existing water tiles
+                    new_tiles = set()
+                    for wx, wy in pond_tiles:
+                        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nx, ny = wx + dx, wy + dy
+                            if (0 < nx < self.width - 1 and 0 < ny < self.height - 1 and
+                                (nx, ny) not in pond_tiles and
+                                random.random() < 0.6):  # 60% chance to expand
+                                new_tiles.add((nx, ny))
+                    pond_tiles.update(new_tiles)
+                
+                # Apply the pond to the grid
+                for px, py in pond_tiles:
+                    self.grid[py][px] = CellType.WATER
+    
+    def _add_cavern_water_features(self):
+        """Add underground water features - small pools and narrow streams."""
+        # Add a few small underground pools
+        num_pools = random.randint(3, 5)
+        for _ in range(num_pools):
+            center_x = random.randint(5, self.width - 6)
+            center_y = random.randint(5, self.height - 6)
+            radius = random.randint(1, 2)
+            
+            for y in range(center_y - radius, center_y + radius + 1):
+                for x in range(center_x - radius, center_x + radius + 1):
+                    if (0 <= x < self.width and 0 <= y < self.height and
+                        ((x - center_x) ** 2 + (y - center_y) ** 2) <= radius ** 2):
+                        self.grid[y][x] = CellType.WATER
 
 
 class DungeonWithStairs(Dungeon):
@@ -2151,9 +2460,11 @@ class Minimap:
             is_visible = (x, y) in self.visible
             
             if cell_type == CellType.FLOOR:
-                base_colour = WHITE
+                base_colour = GREEN  # Changed to match main view
             elif cell_type == CellType.WALL:
                 base_colour = GREY
+            elif cell_type == CellType.WATER:
+                base_colour = BLUE  # Water tiles in blue
             elif cell_type == CellType.STAIRCASE:
                 base_colour = YELLOW
             elif cell_type == CellType.CHEST:

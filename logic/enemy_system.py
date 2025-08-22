@@ -11,12 +11,12 @@ import math
 from .character_system import StatType
 
 class EnemyType(Enum):
-    GOBLIN = "Goblin"
-    ORC = "Orc"
-    SKELETON = "Skeleton"
-    RAT = "Giant Rat"
+    CHICKEN = "Chicken"
+    FROG = "Frog"
+    SNAKE = "Snake"
+    BIRD = "Bird"
     SPIDER = "Spider"
-    TROLL = "Troll"
+    GOBLIN = "Goblin"  # Keep spider as it's a natural creature
 
 class EnemyBehavior(Enum):
     PASSIVE = "Passive"      # Doesn't move unless attacked
@@ -50,29 +50,29 @@ class Enemy:
     def _initialize_stats(self):
         """Initialize enemy stats based on type."""
         stats = {
-            EnemyType.RAT: {
-                'hp': 8, 'strength': 6, 'dexterity': 12, 'constitution': 8,
-                'perception': 10, 'luck': 8, 'exp_value': 5
+            EnemyType.CHICKEN: {
+                'hp': 6, 'strength': 4, 'dexterity': 12, 'constitution': 6,
+                'perception': 8, 'luck': 8, 'exp_value': 6
             },
-            EnemyType.GOBLIN: {
-                'hp': 15, 'strength': 10, 'dexterity': 14, 'constitution': 10,
-                'perception': 12, 'luck': 10, 'exp_value': 15
+            EnemyType.FROG: {
+                'hp': 8, 'strength': 5, 'dexterity': 14, 'constitution': 8,
+                'perception': 10, 'luck': 10, 'exp_value': 7
             },
-            EnemyType.SKELETON: {
-                'hp': 20, 'strength': 12, 'dexterity': 8, 'constitution': 12,
-                'perception': 8, 'luck': 5, 'exp_value': 20
+            EnemyType.SNAKE: {
+                'hp': 10, 'strength': 8, 'dexterity': 16, 'constitution': 8,
+                'perception': 12, 'luck': 8, 'exp_value': 10
+            },
+            EnemyType.BIRD: {
+                'hp': 7, 'strength': 6, 'dexterity': 18, 'constitution': 6,
+                'perception': 14, 'luck': 12, 'exp_value': 8
             },
             EnemyType.SPIDER: {
                 'hp': 12, 'strength': 8, 'dexterity': 16, 'constitution': 10,
-                'perception': 14, 'luck': 10, 'exp_value': 18
+                'perception': 14, 'luck': 10, 'exp_value': 12
             },
-            EnemyType.ORC: {
-                'hp': 30, 'strength': 16, 'dexterity': 8, 'constitution': 16,
-                'perception': 10, 'luck': 8, 'exp_value': 35
-            },
-            EnemyType.TROLL: {
-                'hp': 50, 'strength': 20, 'dexterity': 6, 'constitution': 20,
-                'perception': 8, 'luck': 6, 'exp_value': 60
+            EnemyType.GOBLIN: {
+                'hp': 15, 'strength': 12, 'dexterity': 14, 'constitution': 12,
+                'perception': 12, 'luck': 8, 'exp_value': 15
             }
         }
         
@@ -88,12 +88,12 @@ class Enemy:
     def _get_behavior(self) -> EnemyBehavior:
         """Get behavior pattern based on enemy type."""
         behaviors = {
-            EnemyType.RAT: EnemyBehavior.PATROL,
-            EnemyType.GOBLIN: EnemyBehavior.AGGRESSIVE,
-            EnemyType.SKELETON: EnemyBehavior.GUARD,
+            EnemyType.CHICKEN: EnemyBehavior.PATROL,
+            EnemyType.FROG: EnemyBehavior.PATROL,
+            EnemyType.SNAKE: EnemyBehavior.AGGRESSIVE,
+            EnemyType.BIRD: EnemyBehavior.PATROL,
             EnemyType.SPIDER: EnemyBehavior.AGGRESSIVE,
-            EnemyType.ORC: EnemyBehavior.AGGRESSIVE,
-            EnemyType.TROLL: EnemyBehavior.GUARD
+            EnemyType.GOBLIN: EnemyBehavior.AGGRESSIVE
         }
         return behaviors[self.enemy_type]
     
@@ -229,7 +229,7 @@ class EnemyManager:
         """Get enemy at specific position."""
         return self.enemy_positions.get((x, y))
     
-    def move_enemy(self, enemy: Enemy, new_x: int, new_y: int, player_x: int, player_y: int) -> bool:
+    def move_enemy(self, enemy: Enemy, new_x: int, new_y: int, player_x: int, player_y: int, dungeon=None) -> bool:
         """Move an enemy to a new position."""
         old_pos = enemy.get_position()
         new_pos = (new_x, new_y)
@@ -240,6 +240,10 @@ class EnemyManager:
         
         # Check if position is occupied by the player
         if new_x == player_x and new_y == player_y:
+            return False
+            
+        # Check if position has an item or special tile
+        if dungeon and dungeon.get_cell(new_x, new_y) in [CellType.ITEM, CellType.CHEST, CellType.HP_PICKUP]:
             return False
         
         # Update positions
@@ -263,8 +267,8 @@ class EnemyManager:
             desired_move = enemy.update_ai(current_time, player_x, player_y, dungeon)
             if desired_move:
                 new_x, new_y = desired_move
-                # Pass player position to check for collisions
-                self.move_enemy(enemy, new_x, new_y, player_x, player_y)
+                # Pass player position and dungeon to check for collisions
+                self.move_enemy(enemy, new_x, new_y, player_x, player_y, dungeon)
         
         # Remove dead enemies
         for enemy in enemies_to_remove:
@@ -280,8 +284,28 @@ class EnemyManager:
                     enemies_in_range.append(enemy)
         return enemies_in_range
     
-    def spawn_enemies_in_dungeon(self, dungeon, num_enemies: int = 15, player_start_pos: tuple = None, dungeon_level: int = 1):
-        """Spawn enemies randomly throughout the dungeon with level-based difficulty."""
+    def spawn_enemies_in_dungeon(self, dungeon, num_enemies: int = None, player_start_pos: tuple = None, dungeon_level: int = 1):
+        """Spawn enemies randomly throughout the dungeon with level-based difficulty.
+        
+        Number of enemies scales with dungeon level:
+        - Level 1: 12-15 enemies
+        - Level 2: 14-17 enemies
+        - Level 3: 16-19 enemies
+        - Level 4: 18-21 enemies
+        - Level 5+: 20-23 enemies
+        """
+        # Calculate enemy count based on dungeon level
+        base_min = 12
+        base_max = 15
+        level_increase = 2  # Increase min/max by 2 per level
+        
+        min_enemies = min(20, base_min + (dungeon_level - 1) * level_increase)
+        max_enemies = min(23, base_max + (dungeon_level - 1) * level_increase)
+        
+        # If num_enemies wasn't specified, randomly choose between min and max
+        if num_enemies is None:
+            num_enemies = random.randint(min_enemies, max_enemies)
+        
         spawn_attempts = 0
         enemies_spawned = 0
         max_attempts = num_enemies * 10
@@ -321,48 +345,38 @@ class EnemyManager:
         # Base weights - more dangerous enemies become more common on deeper levels
         if dungeon_level == 1:
             weights = {
-                EnemyType.RAT: 40,
+                EnemyType.CHICKEN: 30,
+                EnemyType.FROG: 25,
+                EnemyType.SNAKE: 20,
+                EnemyType.BIRD: 15,
+                EnemyType.SPIDER: 10
+            }
+        elif dungeon_level == 2:  # Cavern level
+            weights = {
+                EnemyType.SPIDER: 60,  # Lots of spiders in the cavern
+                EnemyType.GOBLIN: 20,  # A few goblins
+                EnemyType.SNAKE: 20,   # Some snakes too
+                EnemyType.CHICKEN: 0,
+                EnemyType.FROG: 0,
+                EnemyType.BIRD: 0
+            }
+        elif dungeon_level == 3:  # Goblin warren
+            weights = {
+                EnemyType.GOBLIN: 70,  # Mostly goblins
+                EnemyType.SPIDER: 20,  # Some spiders
+                EnemyType.SNAKE: 10,   # Few snakes
+                EnemyType.CHICKEN: 0,
+                EnemyType.FROG: 0,
+                EnemyType.BIRD: 0
+            }
+        else:  # Higher levels
+            weights = {
+                EnemyType.SPIDER: 40,
                 EnemyType.GOBLIN: 30,
-                EnemyType.SPIDER: 20,
-                EnemyType.SKELETON: 10,
-                EnemyType.ORC: 0,
-                EnemyType.TROLL: 0
-            }
-        elif dungeon_level == 2:
-            weights = {
-                EnemyType.RAT: 25,
-                EnemyType.GOBLIN: 35,
-                EnemyType.SPIDER: 25,
-                EnemyType.SKELETON: 15,
-                EnemyType.ORC: 0,
-                EnemyType.TROLL: 0
-            }
-        elif dungeon_level == 3:
-            weights = {
-                EnemyType.RAT: 15,
-                EnemyType.GOBLIN: 30,
-                EnemyType.SPIDER: 25,
-                EnemyType.SKELETON: 20,
-                EnemyType.ORC: 10,
-                EnemyType.TROLL: 0
-            }
-        elif dungeon_level == 4:
-            weights = {
-                EnemyType.RAT: 10,
-                EnemyType.GOBLIN: 25,
-                EnemyType.SPIDER: 20,
-                EnemyType.SKELETON: 25,
-                EnemyType.ORC: 15,
-                EnemyType.TROLL: 5
-            }
-        else:  # Level 5+
-            weights = {
-                EnemyType.RAT: 5,
-                EnemyType.GOBLIN: 20,
-                EnemyType.SPIDER: 15,
-                EnemyType.SKELETON: 25,
-                EnemyType.ORC: 25,
-                EnemyType.TROLL: 10
+                EnemyType.SNAKE: 30,
+                EnemyType.CHICKEN: 0,
+                EnemyType.FROG: 0,
+                EnemyType.BIRD: 0
             }
         
         enemy_types = list(weights.keys())

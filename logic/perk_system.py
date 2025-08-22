@@ -388,8 +388,11 @@ class PerkSystem:
         """Calculate experience required to reach a given level."""
         if level <= 1:
             return 0
-        # Experience formula: 100 * level^1.5 (rounded)
-        return int(100 * (level ** 1.5))
+        # Experience formula: 100 for level 2, then scales up
+        if level == 2:
+            return 100
+        # After level 2: 100 * (level-1)^1.5 (rounded)
+        return int(100 * ((level-1) ** 1.5))
     
     def get_experience_to_next_level(self, current_level: int, current_exp: int) -> int:
         """Get experience needed for next level."""
