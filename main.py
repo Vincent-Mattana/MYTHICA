@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mythica Dungeon Crawler - Main Game
+Treasure Goblin - Main Game
 A town-to-dungeon adventure game using the sprite system.
 """
 
@@ -415,8 +415,16 @@ class Game:
     
     def __init__(self, god_mode=False):
         pygame.init()
-        self.screen = pygame.display.set_mode((1024, 768))
-        pygame.display.set_caption("Mythica Dungeon Crawler")
+        
+        # Window settings
+        self.window_width = 1024
+        self.window_height = 768
+        self.fullscreen = False
+        self.resizable = True
+        
+        # Create resizable window
+        self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.RESIZABLE)
+        pygame.display.set_caption("Treasure Goblin")
         self.clock = pygame.time.Clock()
         self.running = True
         
@@ -435,6 +443,12 @@ class Game:
         self.auto_explore_target = None
         self.auto_explore_attack_mode = False  # New mode that attacks enemies
         self.auto_explore_failed_attempts = 0  # Track failed attempts to prevent infinite loops
+        
+        # Light flickering effect
+        self.light_flicker_timer = 0.0
+        self.light_flicker_intensity = 1.0
+        self.flicker_enabled = True  # Toggle for flickering effect
+        self.light_source_type = "torch"  # Type of light source
         
         # Click navigation
         self.click_path = []
@@ -582,6 +596,91 @@ class Game:
             return True
         return False
     
+    def _update_light_flicker(self, delta_time: float):
+        """Update the light flickering effect."""
+        if not self.flicker_enabled:
+            self.light_flicker_intensity = 1.0
+            return
+            
+        import random
+        import math
+        
+        self.light_flicker_timer += delta_time
+        
+        # Create a more subtle flickering pattern based on light source type
+        if self.light_source_type == "torch":
+            # Torch: moderate flickering
+            base_flicker = math.sin(self.light_flicker_timer * 6.0) * 0.04  # Moderate flicker
+            slow_flicker = math.sin(self.light_flicker_timer * 1.5) * 0.02  # Slow variation
+            random_flicker = (random.random() - 0.5) * 0.06  # Small random variation
+            min_intensity = 0.85
+            max_intensity = 1.0
+        elif self.light_source_type == "candle":
+            # Candle: more pronounced flickering
+            base_flicker = math.sin(self.light_flicker_timer * 8.0) * 0.06  # Faster flicker
+            slow_flicker = math.sin(self.light_flicker_timer * 2.0) * 0.03  # Slow variation
+            random_flicker = (random.random() - 0.5) * 0.08  # More random variation
+            min_intensity = 0.8
+            max_intensity = 1.0
+        elif self.light_source_type == "lamp":
+            # Lamp: very subtle flickering
+            base_flicker = math.sin(self.light_flicker_timer * 4.0) * 0.02  # Gentle flicker
+            slow_flicker = math.sin(self.light_flicker_timer * 1.0) * 0.01  # Very slow variation
+            random_flicker = (random.random() - 0.5) * 0.03  # Minimal random variation
+            min_intensity = 0.92
+            max_intensity = 1.0
+        elif self.light_source_type == "magic":
+            # Magic: no flickering
+            base_flicker = 0.0
+            slow_flicker = 0.0
+            random_flicker = 0.0
+            min_intensity = 1.0
+            max_intensity = 1.0
+        else:
+            # Default: subtle flickering
+            base_flicker = math.sin(self.light_flicker_timer * 5.0) * 0.03  # Gentle flicker
+            slow_flicker = math.sin(self.light_flicker_timer * 1.2) * 0.015  # Slow variation
+            random_flicker = (random.random() - 0.5) * 0.04  # Small random variation
+            min_intensity = 0.88
+            max_intensity = 1.0
+        
+        # Combine all flicker effects
+        total_flicker = base_flicker + slow_flicker + random_flicker
+        
+        # Clamp the intensity based on light source type
+        self.light_flicker_intensity = max(min_intensity, min(max_intensity, 1.0 + total_flicker))
+    
+    def set_light_source_type(self, source_type: str):
+        """Set the type of light source to determine flickering behavior."""
+        valid_types = ["torch", "candle", "lamp", "magic", "none"]
+        if source_type in valid_types:
+            self.light_source_type = source_type
+            if source_type == "magic" or source_type == "none":
+                self.flicker_enabled = False
+            else:
+                self.flicker_enabled = True
+            print(f"Light source set to: {source_type}")
+        else:
+            print(f"Invalid light source type. Valid types: {valid_types}")
+    
+    def toggle_flicker(self):
+        """Toggle the light flickering effect on/off."""
+        self.flicker_enabled = not self.flicker_enabled
+        print(f"Light flickering {'enabled' if self.flicker_enabled else 'disabled'}")
+    
+    def set_flicker_enabled(self, enabled: bool):
+        """Set whether light flickering is enabled."""
+        self.flicker_enabled = enabled
+        print(f"Light flickering {'enabled' if enabled else 'disabled'}")
+    
+    def get_light_source_info(self) -> dict:
+        """Get current light source information."""
+        return {
+            "type": self.light_source_type,
+            "flicker_enabled": self.flicker_enabled,
+            "intensity": self.light_flicker_intensity
+        }
+    
     def _update_fog_of_war(self):
         """Update fog of war based on player position and sight range."""
         if not self.player:
@@ -592,7 +691,10 @@ class Game:
         
         # Get player position and sight range
         player_x, player_y = self.player.x, self.player.y
-        sight_range = self.player.character.get_sight_range() if self.player.character else 6
+        base_sight_range = self.player.character.get_sight_range() if self.player.character else 6
+        
+        # Apply flickering effect to sight range
+        sight_range = int(base_sight_range * self.light_flicker_intensity)
         
         # Always make the player's current position visible
         self.visible_tiles.add((player_x, player_y))
@@ -855,7 +957,7 @@ class Game:
         self.player = Player(character, self.town.width // 2, self.town.height // 2)
         self.current_area = GameArea.TOWN
         self.update_camera()
-        self.add_to_log(f"Welcome to Mythica, {character.name}!", (100, 255, 100))
+        self.add_to_log(f"Welcome to Treasure Goblin, {character.name}!", (100, 255, 100))
         self.add_to_log("Explore the town and find the dungeon entrance!", (255, 255, 100))
     
     def add_to_log(self, message: str, color: Tuple[int, int, int] = (255, 255, 255)):
@@ -867,23 +969,45 @@ class Game:
         # Also print to terminal
         print(f"LOG: {message}")
     
+    def get_viewport_offset(self):
+        """Calculate viewport offset to center the game content."""
+        # Calculate the optimal viewport size for the current tile size
+        optimal_width = 1024  # Original designed width
+        optimal_height = 768  # Original designed height
+        
+        screen_width = self.screen.get_width()
+        screen_height = self.screen.get_height()
+        
+        # If window is larger than optimal, center the content
+        offset_x = max(0, (screen_width - optimal_width) // 2)
+        offset_y = max(0, (screen_height - optimal_height) // 2)
+        
+        return offset_x, offset_y
+    
     def update_camera(self):
         """Update camera position to follow player."""
         if self.player:
             # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
             gameplay_height = self.screen.get_height() - 60
             
+            # Get viewport offset for centering
+            viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
+            
+            # Adjust effective screen size for camera calculations
+            effective_width = self.screen.get_width() - (2 * viewport_offset_x)
+            effective_height = gameplay_height - (2 * viewport_offset_y)
+            
             # Center camera on player
-            self.camera_x = self.player.x - self.screen.get_width() // (2 * self.tile_size)
-            self.camera_y = self.player.y - gameplay_height // (2 * self.tile_height)
+            self.camera_x = self.player.x - max(1, effective_width // (2 * self.tile_size))
+            self.camera_y = self.player.y - max(1, effective_height // (2 * self.tile_height))
             
             # Keep camera within bounds
             if self.current_area == GameArea.TOWN:
-                max_camera_x = max(0, self.town.width - self.screen.get_width() // self.tile_size)
-                max_camera_y = max(0, self.town.height - gameplay_height // self.tile_height)
+                max_camera_x = max(0, self.town.width - max(1, effective_width // self.tile_size))
+                max_camera_y = max(0, self.town.height - max(1, effective_height // self.tile_height))
             else:
-                max_camera_x = max(0, self.dungeon.width - self.screen.get_width() // self.tile_size)
-                max_camera_y = max(0, self.dungeon.height - gameplay_height // self.tile_height)
+                max_camera_x = max(0, self.dungeon.width - max(1, effective_width // self.tile_size))
+                max_camera_y = max(0, self.dungeon.height - max(1, effective_height // self.tile_height))
             
             self.camera_x = max(0, min(self.camera_x, max_camera_x))
             self.camera_y = max(0, min(self.camera_y, max_camera_y))
@@ -904,6 +1028,8 @@ class Game:
             if event.button == 1:  # Left click
                 if self.state_manager.current_state == GameState.PLAYING:
                     self._handle_mouse_click(event.pos)
+        elif event.type == pygame.VIDEORESIZE:
+            self._handle_window_resize(event)
         elif event.type == pygame.QUIT:
             self.running = False
     
@@ -983,6 +1109,10 @@ class Game:
             self._toggle_log_popup()
         elif key == pygame.K_r:  # Restart game
             self._restart_game()
+        elif key == pygame.K_F11:  # Toggle fullscreen
+            self._toggle_fullscreen()
+        elif key == pygame.K_F10:  # Toggle resizable
+            self._toggle_resizable()
     
     def _try_move_player(self, dx: int, dy: int, current_time: float):
         """Try to move the player."""
@@ -1372,6 +1502,9 @@ class Game:
             print("DEBUG: Game is paused, skipping update")
             return
         
+        # Update light flickering effect
+        self._update_light_flicker(dt)
+        
         # Update fog of war
         self._update_fog_of_war()
         
@@ -1465,14 +1598,17 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
+        # Get viewport offset for centering
+        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
+        
         for y in range(self.town.height):
             for x in range(self.town.width):
                 # Only render if tile is visible or explored
                 if not (self._is_tile_visible(x, y) or self._is_tile_explored(x, y)):
                     continue
                     
-                screen_x = (x - self.camera_x) * self.tile_size
-                screen_y = (y - self.camera_y) * self.tile_height
+                screen_x = (x - self.camera_x) * self.tile_size + viewport_offset_x
+                screen_y = (y - self.camera_y) * self.tile_height + viewport_offset_y
                 
                 if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
                     screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1495,14 +1631,17 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
+        # Get viewport offset for centering
+        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
+        
         for y in range(self.dungeon.height):
             for x in range(self.dungeon.width):
                 # Only render if tile is visible or explored
                 if not (self._is_tile_visible(x, y) or self._is_tile_explored(x, y)):
                     continue
                     
-                screen_x = (x - self.camera_x) * self.tile_size
-                screen_y = (y - self.camera_y) * self.tile_height
+                screen_x = (x - self.camera_x) * self.tile_size + viewport_offset_x
+                screen_y = (y - self.camera_y) * self.tile_height + viewport_offset_y
                 
                 if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
                     screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1527,7 +1666,20 @@ class Game:
         if sprite_name and self.sprite_manager.sprite_system.get_sprite(sprite_name):
             # Draw sprite without centering offsets for tighter layout
             # Dim the sprite if requested
-            tint_color = (0.5, 0.5, 0.5) if dimmed else self._get_dungeon_level_tint()
+            if dimmed:
+                # Apply darker tinting for fog of war
+                tint_color = self._get_fog_of_war_tint()
+            else:
+                # Apply light flickering effect to visible sprites
+                base_tint = self._get_dungeon_level_tint()
+                if base_tint:
+                    # Adjust tint based on flicker intensity
+                    flicker_factor = self.light_flicker_intensity
+                    tint_color = tuple(c * flicker_factor for c in base_tint)
+                else:
+                    # If no base tint, apply flicker directly
+                    flicker_factor = self.light_flicker_intensity
+                    tint_color = (flicker_factor, flicker_factor, flicker_factor)
             self.sprite_manager.sprite_system.draw_sprite(
                 self.screen, sprite_name, screen_x, screen_y, 
                 scale=1, prevent_overlap=False, tint_color=tint_color
@@ -1536,7 +1688,12 @@ class Game:
             # Fallback to color rendering
             color = self._get_cell_color(cell)
             if dimmed:
-                color = tuple(int(c * 0.5) for c in color)
+                # Reduce all RGB values by 30% (70% of original) to match sprite tinting
+                color = self._darken_color(color, 0.7)
+            else:
+                # Apply light flickering effect to visible colours
+                flicker_factor = self.light_flicker_intensity
+                color = tuple(int(c * flicker_factor) for c in color)
             pygame.draw.rect(self.screen, color, 
                            (screen_x, screen_y, self.tile_size, self.tile_height))
     
@@ -1633,13 +1790,24 @@ class Game:
         }
         return colors.get(cell, (0, 0, 0))
     
+    def _darken_color(self, color: Tuple[int, int, int], factor: float) -> Tuple[int, int, int]:
+        """Darken a colour by reducing all RGB values by the given factor."""
+        return tuple(int(c * factor) for c in color)
+    
+    def _get_fog_of_war_tint(self) -> Tuple[float, float, float]:
+        """Get tint colour for fog of war - use a more neutral darkening approach."""
+        return (0.4, 0.4, 0.4)  # Lighter tint to preserve more of the original colour
+    
     def _render_player(self):
         """Render the player using sprites."""
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
-        screen_x = (self.player.x - self.camera_x) * self.tile_size
-        screen_y = (self.player.y - self.camera_y) * self.tile_height
+        # Get viewport offset for centering
+        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
+        
+        screen_x = (self.player.x - self.camera_x) * self.tile_size + viewport_offset_x
+        screen_y = (self.player.y - self.camera_y) * self.tile_height + viewport_offset_y
         
         if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
             screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1647,16 +1815,26 @@ class Game:
             # Try to use player sprite
             player_sprite = self._get_player_sprite()
             if player_sprite and self.sprite_manager.sprite_system.get_sprite(player_sprite):
+                # Apply darker tint if player is in fog of war (explored but not visible)
+                tint_color = None
+                if self._is_tile_explored(self.player.x, self.player.y) and not self._is_tile_visible(self.player.x, self.player.y):
+                    tint_color = self._get_fog_of_war_tint()
+                
                 # Draw player sprite without centering offsets
                 self.sprite_manager.sprite_system.draw_sprite(
                     self.screen, player_sprite, screen_x, screen_y, 
-                    scale=1, prevent_overlap=False
+                    scale=1, prevent_overlap=False, tint_color=tint_color
                 )
             else:
                 # Fallback to colored circle
                 center_x = screen_x + self.tile_size // 2
                 center_y = screen_y + self.tile_height // 2
-                pygame.draw.circle(self.screen, (100, 150, 255), (center_x, center_y), self.tile_size // 3)
+                # Apply darker colour for fog of war
+                if self._is_tile_explored(self.player.x, self.player.y) and not self._is_tile_visible(self.player.x, self.player.y):
+                    color = self._darken_color((100, 150, 255), 0.7)  # Reduce blue by 30%
+                else:
+                    color = (100, 150, 255)  # Normal blue
+                pygame.draw.circle(self.screen, color, (center_x, center_y), self.tile_size // 3)
     
     
     def _get_player_sprite(self) -> str:
@@ -1667,6 +1845,9 @@ class Game:
         """Render enemies using sprites."""
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
+        
+        # Get viewport offset for centering
+        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
         
         for i, enemy in enumerate(self.enemy_manager.get_living_enemies()):
             enemy_id = f"enemy_{i}_{enemy.enemy_type.name}_{enemy.x}_{enemy.y}"
@@ -1680,8 +1861,8 @@ class Game:
             else:
                 render_x, render_y, _ = self.last_known_positions[enemy_id]
             
-            screen_x = (render_x - self.camera_x) * self.tile_size
-            screen_y = (render_y - self.camera_y) * self.tile_height
+            screen_x = (render_x - self.camera_x) * self.tile_size + viewport_offset_x
+            screen_y = (render_y - self.camera_y) * self.tile_height + viewport_offset_y
             
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
                 screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1691,7 +1872,7 @@ class Game:
                 if enemy_sprite and self.sprite_manager.sprite_system.get_sprite(enemy_sprite):
                     # Draw enemy sprite without centering offsets
                     # Dim the sprite if using last known position
-                    tint_color = (0.5, 0.5, 0.5) if not self._is_tile_visible(enemy.x, enemy.y) else None
+                    tint_color = self._get_fog_of_war_tint() if not self._is_tile_visible(enemy.x, enemy.y) else None
                     
                     # Add damage flash effect
                     if hasattr(enemy, 'damage_flash') and enemy.damage_flash > 0:
@@ -1710,7 +1891,7 @@ class Game:
                     center_x = screen_x + self.tile_size // 2
                     center_y = screen_y + self.tile_height // 2
                     # Dim the circle if using last known position
-                    color = (127, 50, 50) if not self._is_tile_visible(enemy.x, enemy.y) else (255, 100, 100)
+                    color = self._darken_color((255, 100, 100), 0.7) if not self._is_tile_visible(enemy.x, enemy.y) else (255, 100, 100)
                     
                     # Add damage flash effect
                     if hasattr(enemy, 'damage_flash') and enemy.damage_flash > 0:
@@ -1736,6 +1917,9 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
+        # Get viewport offset for centering
+        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
+        
         for npc in self.town.npcs:
             npc_id = f"npc_{npc.name}_{npc.x}_{npc.y}"
             # Render if NPC is visible or has a last known position
@@ -1748,8 +1932,8 @@ class Game:
             else:
                 render_x, render_y, _ = self.last_known_positions[npc_id]
                 
-            screen_x = (render_x - self.camera_x) * self.tile_size
-            screen_y = (render_y - self.camera_y) * self.tile_height
+            screen_x = (render_x - self.camera_x) * self.tile_size + viewport_offset_x
+            screen_y = (render_y - self.camera_y) * self.tile_height + viewport_offset_y
             
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
                 screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1759,7 +1943,7 @@ class Game:
                 if npc_sprite and self.sprite_manager.sprite_system.get_sprite(npc_sprite):
                     # Draw NPC sprite without centering offsets
                     # Dim the sprite if using last known position
-                    tint_color = (0.5, 0.5, 0.5) if not self._is_tile_visible(npc.x, npc.y) else None
+                    tint_color = self._get_fog_of_war_tint() if not self._is_tile_visible(npc.x, npc.y) else None
                     self.sprite_manager.sprite_system.draw_sprite(
                         self.screen, npc_sprite, screen_x, screen_y, 
                         scale=1, prevent_overlap=False, tint_color=tint_color
@@ -1769,7 +1953,7 @@ class Game:
                     center_x = screen_x + self.tile_size // 2
                     center_y = screen_y + self.tile_height // 2
                     # Dim the circle if using last known position
-                    color = (127, 127, 50) if not self._is_tile_visible(npc.x, npc.y) else (255, 255, 100)
+                    color = self._darken_color((255, 255, 100), 0.7) if not self._is_tile_visible(npc.x, npc.y) else (255, 255, 100)
                     pygame.draw.circle(self.screen, color, (center_x, center_y), self.tile_size // 4)
     
     def _render_painted_sprites(self):
@@ -1777,18 +1961,26 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
+        # Get viewport offset for centering
+        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
+        
         for (grid_x, grid_y), sprite_name in self.town.painted_sprites.items():
-            screen_x = (grid_x - self.camera_x) * self.tile_size
-            screen_y = (grid_y - self.camera_y) * self.tile_height
+            screen_x = (grid_x - self.camera_x) * self.tile_size + viewport_offset_x
+            screen_y = (grid_y - self.camera_y) * self.tile_height + viewport_offset_y
             
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
                 screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
                 
                 if self.sprite_manager.sprite_system.get_sprite(sprite_name):
+                    # Apply fog of war dimming if not visible
+                    tint_color = None
+                    if not self._is_tile_visible(grid_x, grid_y):
+                        tint_color = self._get_fog_of_war_tint()
+                    
                     # Draw painted sprite without centering offsets
                     self.sprite_manager.sprite_system.draw_sprite(
                         self.screen, sprite_name, screen_x, screen_y, 
-                        scale=1, prevent_overlap=False
+                        scale=1, prevent_overlap=False, tint_color=tint_color
                     )
     
     def _get_npc_sprite(self, npc_type: str) -> str:
@@ -1986,9 +2178,11 @@ class Game:
         # Check if the click is within valid bounds
         if self.current_area == GameArea.TOWN:
             if not (0 <= tile_x < self.town.width and 0 <= tile_y < self.town.height):
+                self.add_to_log("Click outside town bounds!", (255, 100, 100))
                 return
         elif self.current_area == GameArea.DUNGEON:
             if not (0 <= tile_x < self.dungeon.width and 0 <= tile_y < self.dungeon.height):
+                self.add_to_log("Click outside dungeon bounds!", (255, 100, 100))
                 return
         
         # Don't check walkability here - let pathfinding handle it
@@ -1998,6 +2192,7 @@ class Game:
             self.auto_explore_active = False
             self.auto_explore_path = []
             self.auto_explore_target = None
+            self.add_to_log("Auto-explore cancelled", (255, 255, 255))
         
         # Set up click navigation
         self.click_target = (tile_x, tile_y)
@@ -2018,34 +2213,107 @@ class Game:
         
         print(f"DEBUG: Target ({tile_x}, {tile_y}) - Walkable: {can_reach_exact_target}")
         
+        # Try pathfinding with explored areas only first
         if self.current_area == GameArea.TOWN:
             self.click_path = self._find_path_town(start, target)
         else:
             self.click_path = self._find_path(start, target)
         
+        # If no path found with explored areas, try allowing unexplored areas
         if not self.click_path:
-            self.add_to_log("No path found!", (255, 100, 100))
+            print(f"DEBUG: No path with explored areas only, trying with unexplored areas allowed")
+            if self.current_area == GameArea.TOWN:
+                self.click_path = self._find_path_unified(start, target, allow_unexplored=True)
+            else:
+                self.click_path = self._find_path_unified(start, target, allow_unexplored=True)
+        
+        if not self.click_path:
+            # Try to find nearest reachable position
+            nearest_target = self._find_nearest_reachable_target(start, target)
+            if nearest_target and nearest_target != target:
+                print(f"DEBUG: No path to exact target ({tile_x}, {tile_y}), trying nearest reachable ({nearest_target[0]}, {nearest_target[1]})")
+                if self.current_area == GameArea.TOWN:
+                    self.click_path = self._find_path_town(start, nearest_target)
+                else:
+                    self.click_path = self._find_path(start, nearest_target)
+                self.click_target = nearest_target
+        
+        if not self.click_path:
+            self.add_to_log("No path found to target!", (255, 100, 100))
             self.click_navigation_active = False
             self.click_target = None
         else:
-            final_target = self.click_path[-1] if self.click_path else (tile_x, tile_y)
-            print(f"DEBUG: Clicked ({tile_x}, {tile_y}) -> Final target ({final_target[0]}, {final_target[1]}) with {len(self.click_path)} steps")
-            if (tile_x, tile_y) != (final_target[0], final_target[1]):
-                print(f"DEBUG: Target adjusted from ({tile_x}, {tile_y}) to ({final_target[0]}, {final_target[1]})")
-            self.add_to_log(f"Pathing to ({final_target[0]}, {final_target[1]})", (100, 255, 100))
+            final_target = self.click_path[-1] if self.click_path else target
+            path_length = len(self.click_path)
+            
+            # Provide clear feedback about the path
+            if final_target == target:
+                self.add_to_log(f"Pathing to ({final_target[0]}, {final_target[1]}) - {path_length} steps", (100, 255, 100))
+            else:
+                self.add_to_log(f"Pathing to nearest reachable ({final_target[0]}, {final_target[1]}) - {path_length} steps", (255, 255, 100))
+            
+            print(f"DEBUG: Final target ({final_target[0]}, {final_target[1]}) with {path_length} steps")
     
     def _screen_to_tile_coords(self, screen_x, screen_y):
-        """Convert screen coordinates to tile coordinates."""
-        # Account for camera offset
-        world_x = screen_x + self.camera_x
-        world_y = screen_y + self.camera_y
+        """Convert screen coordinates to tile coordinates with improved precision."""
+        # Account for viewport offset for centering
+        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
         
-        # Convert to tile coordinates
-        tile_x = world_x // self.tile_size
-        tile_y = world_y // self.tile_height
+        # Adjust for viewport offset
+        adjusted_x = screen_x - viewport_offset_x
+        adjusted_y = screen_y - viewport_offset_y
+        
+        # Account for camera offset
+        world_x = adjusted_x + self.camera_x * self.tile_size
+        world_y = adjusted_y + self.camera_y * self.tile_height
+        
+        # Convert to tile coordinates with proper rounding for better accuracy
+        tile_x = round(world_x / self.tile_size)
+        tile_y = round(world_y / self.tile_height)
         
         return tile_x, tile_y
     
+    def _find_nearest_reachable_target(self, start, target):
+        """Find the nearest reachable position to the target."""
+        import math
+        
+        # Get the area dimensions
+        if self.current_area == GameArea.TOWN:
+            width, height = self.town.width, self.town.height
+        else:
+            width, height = self.dungeon.width, self.dungeon.height
+        
+        # Search in expanding circles around the target
+        max_search_radius = min(width, height) // 2
+        
+        for radius in range(max_search_radius + 1):
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    if dx * dx + dy * dy != radius * radius:
+                        continue
+                    
+                    test_x = target[0] + dx
+                    test_y = target[1] + dy
+                    
+                    # Check bounds
+                    if not (0 <= test_x < width and 0 <= test_y < height):
+                        continue
+                    
+                    # Check if position is walkable and explored
+                    is_walkable = False
+                    if self.current_area == GameArea.TOWN:
+                        cell = self.town.get_cell(test_x, test_y)
+                        is_walkable = (cell in [CellType.TOWN_FLOOR, CellType.TOWN_DOOR] and 
+                                     self._is_tile_explored(test_x, test_y))
+                    else:
+                        cell = self.dungeon.get_cell(test_x, test_y)
+                        is_walkable = (cell in [CellType.FLOOR, CellType.DOOR] and 
+                                     self._is_tile_explored(test_x, test_y))
+                    
+                    if is_walkable:
+                        return (test_x, test_y)
+        
+        return None
     
     def _find_path_unified(self, start, target, allow_unexplored=False, depth=0):
         """Unified A* pathfinding for all cases."""
@@ -2368,6 +2636,56 @@ class Game:
         
         # Save to file
         self._save_high_scores()
+    
+    def _toggle_fullscreen(self):
+        """Toggle between fullscreen and windowed mode."""
+        self.fullscreen = not self.fullscreen
+        
+        if self.fullscreen:
+            # Get the current display mode
+            info = pygame.display.Info()
+            self.screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.FULLSCREEN)
+            self.window_width = info.current_w
+            self.window_height = info.current_h
+            self.add_to_log("Fullscreen mode enabled", (100, 255, 100))
+        else:
+            # Return to windowed mode
+            self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.RESIZABLE)
+            self.add_to_log("Windowed mode enabled", (100, 255, 100))
+        
+        # Update camera and background
+        self.update_camera()
+        if hasattr(self, 'state_manager') and self.state_manager:
+            self.state_manager.screen = self.screen
+            if hasattr(self.state_manager, 'original_background') and self.state_manager.original_background:
+                self.state_manager._resize_background()
+    
+    def _toggle_resizable(self):
+        """Toggle resizable window mode."""
+        self.resizable = not self.resizable
+        
+        if self.resizable:
+            self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.RESIZABLE)
+            self.add_to_log("Resizable window enabled", (100, 255, 100))
+        else:
+            self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.NOFRAME)
+            self.add_to_log("Fixed window enabled", (100, 255, 100))
+    
+    def _handle_window_resize(self, event):
+        """Handle window resize events."""
+        if event.type == pygame.VIDEORESIZE:
+            self.window_width = event.w
+            self.window_height = event.h
+            self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.RESIZABLE)
+            self.update_camera()
+            
+            # Update state manager if it exists
+            if hasattr(self, 'state_manager') and self.state_manager:
+                self.state_manager.screen = self.screen
+                if hasattr(self.state_manager, 'original_background') and self.state_manager.original_background:
+                    self.state_manager._resize_background()
+            
+            self.add_to_log(f"Window resized to {self.window_width}x{self.window_height}", (100, 255, 100))
     
     def _restart_game(self):
         """Restart the game from the beginning."""
@@ -2998,6 +3316,12 @@ class Game:
             can_move = self.dungeon.can_move_to(next_pos[0], next_pos[1])
         
         if can_move:
+            # Check if we're already at the next position (shouldn't happen, but safety check)
+            if next_pos[0] == self.player.x and next_pos[1] == self.player.y:
+                print(f"DEBUG: Already at next position ({next_pos[0]}, {next_pos[1]}), removing from path")
+                self.click_path.pop(0)
+                return
+            
             self.player.move_to(next_pos[0], next_pos[1], current_time)
             self.update_camera()
             
@@ -3013,11 +3337,33 @@ class Game:
                 # Check for special interactions
                 self._check_special_tiles(next_pos[0], next_pos[1])
         else:
-            # Path is blocked, cancel navigation
-            self.click_navigation_active = False
-            self.click_path = []
-            self.click_target = None
-            self.add_to_log("Path blocked!", (255, 100, 100))
+            # Path is blocked, try to recalculate path
+            print(f"DEBUG: Movement blocked at ({next_pos[0]}, {next_pos[1]}), attempting to recalculate path")
+            
+            # Try to recalculate path from current position
+            start = (self.player.x, self.player.y)
+            target = self.click_target
+            
+            if target:
+                if self.current_area == GameArea.TOWN:
+                    new_path = self._find_path_town(start, target)
+                else:
+                    new_path = self._find_path(start, target)
+                
+                if new_path:
+                    self.click_path = new_path
+                    self.add_to_log("Path recalculated", (255, 255, 100))
+                else:
+                    # No new path found, cancel navigation
+                    self.click_navigation_active = False
+                    self.click_path = []
+                    self.click_target = None
+                    self.add_to_log("Path blocked and no alternative found!", (255, 100, 100))
+            else:
+                # No target, cancel navigation
+                self.click_navigation_active = False
+                self.click_path = []
+                self.add_to_log("Path blocked!", (255, 100, 100))
     
     def _render_click_path(self):
         """Render the click navigation path."""
@@ -3027,10 +3373,13 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
+        # Get viewport offset for centering
+        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
+        
         # Render path as a series of connected dots
         for i, (x, y) in enumerate(self.click_path):
-            screen_x = (x - self.camera_x) * self.tile_size
-            screen_y = (y - self.camera_y) * self.tile_height
+            screen_x = (x - self.camera_x) * self.tile_size + viewport_offset_x
+            screen_y = (y - self.camera_y) * self.tile_height + viewport_offset_y
             
             # Check if the tile is on screen
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
@@ -3223,7 +3572,7 @@ class Game:
 
 def main():
     """Main entry point."""
-    parser = argparse.ArgumentParser(description='Mythica Dungeon Crawler')
+    parser = argparse.ArgumentParser(description='Treasure Goblin')
     parser.add_argument('-g', '--god-mode', action='store_true', 
                        help='Enable god mode: invincible + 10000 gold')
     

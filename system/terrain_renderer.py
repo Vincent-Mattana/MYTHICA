@@ -1,5 +1,5 @@
 """
-Terrain Renderer for Mythica
+Terrain Renderer for Treasure Goblin
 Handles rendering of terrain tiles using the sprite system.
 """
 

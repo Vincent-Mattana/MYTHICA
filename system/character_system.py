@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Character System for Mythica Dungeon Crawler
+Character System for Treasure Goblin
 Handles character stats, equipment, and related functionality.
 """
 

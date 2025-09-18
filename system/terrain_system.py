@@ -1,5 +1,5 @@
 """
-Terrain Generation System for Mythica
+Terrain Generation System for Treasure Goblin
 Handles procedural generation of different biomes and terrain features.
 """
 

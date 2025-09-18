@@ -1,5 +1,5 @@
 """
-Memory-efficient terrain storage system for Mythica
+Memory-efficient terrain storage system for Treasure Goblin
 Uses compact data structures to minimize memory usage.
 """
 

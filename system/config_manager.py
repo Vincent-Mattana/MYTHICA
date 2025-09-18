@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Configuration Manager for Mythica Dungeon Crawler
+Configuration Manager for Treasure Goblin
 Handles reading and parsing configuration files for key bindings and game settings.
 """
 

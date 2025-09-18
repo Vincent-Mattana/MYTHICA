@@ -1,5 +1,5 @@
 """
-Inventory System for Mythica
+Inventory System for Treasure Goblin
 Manages character inventory, interactive character screen, and item management.
 Integrates with the sprite system for visual rendering.
 """

@@ -1,4 +1,4 @@
-# Mythica - Grid-Based Dungeon Crawler
+# Treasure Goblin - Grid-Based Dungeon Crawler
 
 A procedurally generated dungeon exploration game with minimap functionality, built with Python and pygame.
 
@@ -49,7 +49,7 @@ A procedurally generated dungeon exploration game with minimap functionality, bu
    ```
 
 ## File Structure
-Mythica/
+Treasure Goblin/
 ├── logic/                    # Core game logic (NEW)
 │   ├── character_system.py   # Character stats, equipment, classes
 │   ├── enemy_system.py       # Enemy AI, health bars, spawning  
@@ -104,7 +104,7 @@ python main.py
 ## Movement System
 
 ### **Precision Control**
-Mythica features a sophisticated movement system designed for tactical gameplay:
+Treasure Goblin features a sophisticated movement system designed for tactical gameplay:
 
 #### **Single Key Press (Immediate Response)**
 - **Tap any movement key**: Character moves exactly one step
@@ -356,7 +356,7 @@ When you select an inventory item and click an equipment slot:
 - **Error Prevention**: System prevents invalid equipment combinations
 - **Consistent Behaviour**: Predictable interactions across all item types
 
-The interactive inventory system transforms Mythica from a simple dungeon crawler into a deep character customisation experience. Take time to experiment with different equipment combinations to discover powerful builds!
+The interactive inventory system transforms Treasure Goblin from a simple dungeon crawler into a deep character customisation experience. Take time to experiment with different equipment combinations to discover powerful builds!
 
 ## Level-Up and Perk System
 
@@ -586,4 +586,4 @@ The game follows a modular design with separate classes for:
 - `TurnManager`: Turn-based action scheduling and timing
 - `ActionCosts`: Weapon timing and action cost calculations
 
-Enjoy exploring the depths of Mythica and developing your unique character build! 
+Enjoy exploring the depths of Treasure Goblin and developing your unique character build! 

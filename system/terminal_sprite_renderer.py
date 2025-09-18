@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Terminal Sprite Renderer for Mythica
+Terminal Sprite Renderer for Treasure Goblin
 Converts pygame sprites to terminal-displayable format using Unicode characters and ANSI colours.
 """
 
@@ -251,7 +251,7 @@ class TerminalGameRenderer:
 
 def demo_terminal_sprites():
     """Demonstration of terminal sprite rendering."""
-    print("🎮 Mythica Terminal Sprite Demo 🎮\n")
+    print("🎮 Treasure Goblin Terminal Sprite Demo 🎮\n")
     
     # Initialize sprite system
     assets_path = Path(__file__).parent.parent / "assets"

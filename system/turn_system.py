@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Turn-Based System for Mythica Dungeon Crawler
+Turn-Based System for Treasure Goblin
 Handles action timing, turn scheduling, and turn-based mechanics.
 """
 

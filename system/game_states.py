@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Game States for Mythica Dungeon Crawler
+Game States for Treasure Goblin
 Handles different game screens: Menu, Class Selection, Playing, Game Over
 """
 
@@ -211,17 +211,94 @@ class GameStateManager:
             self.text_font = pygame.font.SysFont("monospace", 36)
             self.small_font = pygame.font.SysFont("monospace", 24)
         
-        # Red on black color scheme
+        # Goblin green color scheme
         self.bg_color = (0, 0, 0)  # Pure black background
-        self.text_color = (255, 0, 0)  # Bright red text
-        self.selected_color = (255, 100, 100)  # Light red for selected items
-        self.accent_color = (255, 50, 50)  # Darker red for accents
-        self.hover_color = (255, 150, 150)  # Light red for hover
+        self.text_color = (50, 255, 50)  # Bright goblin green text
+        self.selected_color = (100, 255, 100)  # Light goblin green for selected items
+        self.accent_color = (0, 200, 0)  # Darker goblin green for accents
+        self.hover_color = (150, 255, 150)  # Light goblin green for hover
         
         # Menu option rectangles for mouse interaction
         self.menu_option_rects = []  # List of (rect, index) tuples for main menu
         self.class_option_rects = []  # List of (rect, index) tuples for class selection
         self.game_over_option_rects = []  # List of (rect, index) tuples for game over screen
+        
+        # Background image
+        self.background_image = None
+        self._load_background_image()
+    
+    def _load_background_image(self):
+        """Load the background image for the main menu with proper aspect ratio maintenance."""
+        try:
+            # Try to load the background image
+            background_path = "Screenshot 2025-09-18 at 19.42.52.png"
+            self.background_image = pygame.image.load(background_path)
+            
+            # Store original image for resizing
+            self.original_background = self.background_image.copy()
+            self._resize_background()
+            
+            print(f"Background image loaded successfully: {background_path}")
+        except pygame.error as e:
+            print(f"Could not load background image: {e}")
+            self.background_image = None
+            self.original_background = None
+        except FileNotFoundError:
+            print(f"Background image file not found: {background_path}")
+            self.background_image = None
+            self.original_background = None
+    
+    def _resize_background(self):
+        """Resize background image to maintain aspect ratio and fill screen with darkened areas."""
+        if not self.original_background:
+            return
+            
+        screen_width, screen_height = self.screen.get_size()
+        img_width, img_height = self.original_background.get_size()
+        
+        # Calculate scale factors to maintain aspect ratio
+        scale_x = screen_width / img_width
+        scale_y = screen_height / img_height
+        
+        # Use the larger scale to ensure the image covers the entire screen
+        scale = max(scale_x, scale_y)
+        
+        # Calculate new dimensions
+        new_width = int(img_width * scale)
+        new_height = int(img_height * scale)
+        
+        # Scale the image
+        scaled_image = pygame.transform.scale(self.original_background, (new_width, new_height))
+        
+        # Create a darkened version
+        darkened_image = scaled_image.copy()
+        dark_overlay = pygame.Surface((new_width, new_height))
+        dark_overlay.set_alpha(100)  # Darken by 100 alpha (0-255)
+        dark_overlay.fill((0, 0, 0))  # Black overlay
+        darkened_image.blit(dark_overlay, (0, 0), special_flags=pygame.BLEND_MULT)
+        
+        # Center the image on the screen
+        self.background_image = pygame.Surface((screen_width, screen_height))
+        self.background_image.fill((0, 0, 0))  # Black background for uncovered areas
+        
+        # Calculate position to center the image
+        x_offset = (screen_width - new_width) // 2
+        y_offset = (screen_height - new_height) // 2
+        
+        self.background_image.blit(darkened_image, (x_offset, y_offset))
+    
+    def handle_resize(self, event):
+        """Handle window resize events."""
+        if event.type == pygame.VIDEORESIZE:
+            # Update screen size
+            self.screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
+            
+            # Resize background image
+            if self.original_background:
+                self._resize_background()
+            
+            return True
+        return False
     
     def handle_input(self, event) -> Tuple[bool, Optional[Character]]:
         """
@@ -478,8 +555,15 @@ class GameStateManager:
         # Clear previous option rectangles
         self.menu_option_rects = []
         
+        # Draw background image if available
+        if self.background_image:
+            self.screen.blit(self.background_image, (0, 0))
+        else:
+            # Fallback to solid background
+            self.screen.fill(self.bg_color)
+        
         # Title
-        title_surface = self.title_font.render("MYTHICA", True, self.accent_color)
+        title_surface = self.title_font.render("TREASURE GOBLIN", True, self.accent_color)
         title_rect = title_surface.get_rect(center=(512, 150))
         self.screen.blit(title_surface, title_rect)
         
@@ -505,6 +589,7 @@ class GameStateManager:
         controls = [
             "USE W/S OR UP/DOWN TO NAVIGATE",
             "CLICK OR PRESS ENTER/SPACE TO SELECT",
+            "F11: TOGGLE FULLSCREEN * F10: TOGGLE RESIZABLE",
             "PRESS ESCAPE TO QUIT"
         ]
         
@@ -517,6 +602,13 @@ class GameStateManager:
         """Render the class selection screen."""
         # Clear previous option rectangles
         self.class_option_rects = []
+        
+        # Draw background image if available
+        if self.background_image:
+            self.screen.blit(self.background_image, (0, 0))
+        else:
+            # Fallback to solid background
+            self.screen.fill(self.bg_color)
         
         # Draw dividing line
         pygame.draw.line(self.screen, self.accent_color, (256, 0), (256, 768), 2)
@@ -625,6 +717,13 @@ class GameStateManager:
     
     def _render_name_entry(self):
         """Render the name entry screen."""
+        # Draw background image if available
+        if self.background_image:
+            self.screen.blit(self.background_image, (0, 0))
+        else:
+            # Fallback to solid background
+            self.screen.fill(self.bg_color)
+        
         # Title
         title_surface = self.title_font.render("ENTER YOUR NAME", True, self.accent_color)
         title_rect = title_surface.get_rect(center=(512, 200))
@@ -684,6 +783,13 @@ class GameStateManager:
         # Clear previous option rectangles
         self.game_over_option_rects = []
         
+        # Draw background image if available
+        if self.background_image:
+            self.screen.blit(self.background_image, (0, 0))
+        else:
+            # Fallback to solid background
+            self.screen.fill(self.bg_color)
+        
         # Semi-transparent overlay
         overlay = pygame.Surface((1024, 768))
         overlay.set_alpha(200)
@@ -691,14 +797,14 @@ class GameStateManager:
         self.screen.blit(overlay, (0, 0))
         
         # Game Over title
-        game_over_surface = self.title_font.render("GAME OVER", True, (255, 100, 100))
+        game_over_surface = self.title_font.render("GAME OVER", True, self.accent_color)
         game_over_rect = game_over_surface.get_rect(center=(512, 150))
         self.screen.blit(game_over_surface, game_over_rect)
         
         # Score display
         if self.game and hasattr(self.game, 'final_score'):
             score_text = f"FINAL SCORE: {self.game.final_score}"
-            score_surface = self.header_font.render(score_text, True, (255, 255, 0))
+            score_surface = self.header_font.render(score_text, True, self.text_color)
             score_rect = score_surface.get_rect(center=(512, 200))
             self.screen.blit(score_surface, score_rect)
         

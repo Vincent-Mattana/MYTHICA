@@ -1,5 +1,5 @@
 """
-Sprite Font System for Mythica
+Sprite Font System for Treasure Goblin
 Handles rendering text using sprite-based fonts.
 """
 

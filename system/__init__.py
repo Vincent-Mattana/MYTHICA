@@ -1,5 +1,5 @@
 """
-Logic module for Mythica - contains core game systems.
+Logic module for Treasure Goblin - contains core game systems.
 
 This module provides the fundamental game logic components including:
 - Character system with stats, equipment, and leveling

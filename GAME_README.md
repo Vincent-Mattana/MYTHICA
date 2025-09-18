@@ -1,4 +1,4 @@
-# Mythica Dungeon Crawler
+# Treasure Goblin
 
 A town-to-dungeon adventure game built with Python and Pygame, featuring the existing sprite system.
 
@@ -129,4 +129,4 @@ A town-to-dungeon adventure game built with Python and Pygame, featuring the exi
 - **Magic System**: Spells and magical abilities
 - **Boss Fights**: Special encounters on deeper levels
 
-Enjoy exploring the depths of Mythica!
+Enjoy exploring the depths of Treasure Goblin!

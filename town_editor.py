@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Town Editor for Mythica
+Town Editor for Treasure Goblin
 A visual tool for creating and editing town layouts
 """
 
@@ -46,7 +46,7 @@ class TownEditor:
         self.screen_width = 1200
         self.screen_height = 800
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
-        pygame.display.set_caption("Mythica Town Editor")
+        pygame.display.set_caption("Treasure Goblin Town Editor")
         
         # Game systems
         self.sprite_manager = GameSpriteManager()

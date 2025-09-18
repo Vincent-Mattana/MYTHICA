@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enemy System for Mythica Dungeon Crawler
+Enemy System for Treasure Goblin
 Handles enemy types, stats, AI, and combat mechanics.
 """
 
