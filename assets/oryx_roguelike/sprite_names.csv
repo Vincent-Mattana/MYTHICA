@@ -1,0 +1,137 @@
+file,x,y,index,name
+Terrain.png,0,0,0,Wall
+Terrain.png,96,0,6,wall dmg 6
+Terrain.png,16,0,1,wall dmg 1
+Terrain.png,112,0,7,window
+Terrain.png,32,0,2,wall dmg 2
+Terrain.png,48,0,3,wall dmg 3
+Terrain.png,64,0,4,wall dmg 4
+Terrain.png,80,0,5,wall dmg 5
+Terrain.png,128,0,8,window dmg 1
+Terrain.png,96,24,22,[EMPTY]
+Terrain.png,112,24,23,[EMPTY]
+Terrain.png,224,240,174,[EMPTY]
+Terrain.png,240,240,175,[EMPTY]
+Terrain.png,144,240,169,[EMPTY]
+Terrain.png,240,216,159,[EMPTY]
+Terrain.png,176,216,155,[EMPTY]
+Terrain.png,48,144,99,[EMPTY]
+Terrain.png,48,96,67,[EMPTY]
+Terrain.png,176,48,43,[EMPTY]
+Terrain.png,48,48,35,[EMPTY]
+Terrain.png,160,0,10,[EMPTY]
+Terrain.png,240,0,15,[EMPTY]
+Terrain.png,176,0,11,floor
+Terrain.png,192,0,12,floor2
+Terrain.png,144,0,9,window dmg 2
+Terrain.png,208,0,13,shattered window
+Terrain.png,224,0,14,prison gate
+Terrain.png,0,24,16,water 1
+Terrain.png,16,24,17,water 2
+Terrain.png,32,24,18,bubbles 1
+Terrain.png,48,24,19,bubbles 2
+Terrain.png,64,24,20,slime 1
+Terrain.png,80,24,21,slime 2
+Terrain.png,128,24,24,stairs down 1
+Terrain.png,144,24,25,stairs down 2
+Terrain.png,160,24,26,stairs up 1
+Terrain.png,176,24,27,stairs up 2
+Terrain.png,192,24,28,stairs up
+Terrain.png,208,24,29,stairs down
+Terrain.png,224,24,30,signal strength
+Interface.png,208,120,113,[EMPTY]
+Interface.png,224,120,114,[EMPTY]
+Interface.png,240,120,115,[EMPTY]
+Interface.png,304,120,119,[EMPTY]
+Interface.png,288,120,118,[EMPTY]
+Interface.png,272,120,117,[EMPTY]
+Interface.png,256,120,116,[EMPTY]
+Interface.png,304,96,99,[EMPTY]
+Interface.png,288,96,98,[EMPTY]
+Interface.png,272,96,97,[EMPTY]
+Interface.png,256,96,96,[EMPTY]
+Interface.png,192,96,92,[EMPTY]
+Interface.png,208,96,93,[EMPTY]
+Interface.png,224,96,94,[EMPTY]
+Interface.png,240,96,95,[EMPTY]
+Interface.png,176,96,91,[EMPTY]
+Interface.png,304,72,79,[EMPTY]
+Interface.png,288,72,78,[EMPTY]
+Interface.png,272,72,77,[EMPTY]
+Interface.png,256,72,76,[EMPTY]
+Interface.png,192,72,72,[EMPTY]
+Interface.png,208,72,73,[EMPTY]
+Interface.png,224,72,74,[EMPTY]
+Interface.png,240,72,75,[EMPTY]
+Interface.png,176,72,71,[EMPTY]
+Interface.png,304,48,59,[EMPTY]
+Interface.png,288,48,58,[EMPTY]
+Interface.png,272,48,57,[EMPTY]
+Interface.png,256,48,56,[EMPTY]
+Interface.png,240,48,55,[EMPTY]
+Interface.png,224,48,54,[EMPTY]
+Interface.png,208,48,53,[EMPTY]
+Interface.png,192,48,52,[EMPTY]
+Interface.png,176,48,51,[EMPTY]
+Interface.png,304,24,39,[EMPTY]
+Interface.png,288,24,38,[EMPTY]
+Interface.png,272,24,37,[EMPTY]
+Interface.png,256,24,36,[EMPTY]
+Interface.png,240,24,35,[EMPTY]
+Interface.png,224,24,34,[EMPTY]
+Interface.png,208,24,33,[EMPTY]
+Interface.png,192,24,32,[EMPTY]
+Interface.png,176,24,31,[EMPTY]
+Interface.png,304,0,19,[EMPTY]
+Interface.png,288,0,18,[EMPTY]
+Interface.png,272,0,17,[EMPTY]
+Interface.png,240,0,15,[EMPTY]
+Terrain_Objects.png,0,240,200,small grass
+Terrain_Objects.png,16,240,201,big grass
+Terrain_Objects.png,32,240,202,grass flowers
+Terrain_Objects.png,48,240,203,shrub
+Terrain_Objects.png,0,264,220,lily pad 1
+Terrain_Objects.png,16,264,221,lily pad 2
+Terrain_Objects.png,32,264,222,lily pad 3
+Terrain_Objects.png,48,264,223,lily pad 4
+Terrain_Objects.png,64,264,224,lily pads 1
+Terrain_Objects.png,80,264,225,lily pads 2
+Terrain_Objects.png,176,144,131,mushrooms
+Terrain_Objects.png,112,144,127,branch
+Terrain_Objects.png,96,144,126,tree - confier
+Terrain_Objects.png,80,144,125,shrub dead
+Terrain_Objects.png,64,144,124,tree dead
+Terrain_Objects.png,0,144,120,undergrowth 1
+Terrain_Objects.png,16,144,121,undergrowth 2
+Terrain_Objects.png,32,144,122,undergrowth 3
+Terrain_Objects.png,48,144,123,undergrowth 4
+Terrain_Objects.png,128,144,128,big flower
+Terrain_Objects.png,144,144,129,small flowers
+Avatar.png,0,0,0,avatar
+Avatar.png,16,0,1,avatar left
+Avatar.png,32,0,2,avatar right
+Avatar.png,48,0,3,avatar punch left
+Avatar.png,64,0,4,avatar punch right
+Avatar.png,80,0,5,ranged attack left
+Avatar.png,96,0,6,avatar fat
+Avatar.png,112,0,7,mage_armored
+Avatar.png,128,0,8,ranger_armored
+Avatar.png,144,0,9,cleric_armored
+Avatar.png,0,24,10,warrior_equipped
+Avatar.png,16,24,11,rogue_equipped
+Avatar.png,32,24,12,mage_equipped
+Avatar.png,48,24,13,ranger_equipped
+Avatar.png,64,24,14,cleric_equipped
+Avatar.png,0,24,7,avatar shadow
+Monsters.png,0,96,76,crab
+Monsters.png,16,96,77,rat
+Monsters.png,32,96,78,spider
+Monsters.png,48,96,79,dog
+Monsters.png,80,96,81,boar
+Monsters.png,96,96,82,bat
+Monsters.png,160,96,86,frog
+Monsters.png,128,96,84,snake
+Monsters.png,144,96,85,lizard
+Monsters.png,240,96,91,bird
+Monsters.png,112,432,349,slime
+Monsters.png,80,504,404,goblin

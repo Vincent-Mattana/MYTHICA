@@ -1,0 +1,802 @@
+#!/usr/bin/env python3
+"""
+Game States for Mythica Dungeon Crawler
+Handles different game screens: Menu, Class Selection, Playing, Game Over
+"""
+
+import pygame
+from enum import Enum
+from typing import Dict, Optional, Tuple, TYPE_CHECKING
+from pathlib import Path
+
+if TYPE_CHECKING:
+    from main import Game
+from .character_system import Character, StatType, ItemGenerator, ItemType, EquipmentSlot, Equipment
+from .turn_system import ActionType
+from .sprite_font import SpriteFont
+
+class GameState(Enum):
+    MENU = "menu"
+    CLASS_SELECTION = "class_selection"
+    NAME_ENTRY = "name_entry"
+    PLAYING = "playing"
+    TARGETING = "targeting"  # For ranged attacks and abilities
+    GAME_OVER = "game_over"
+    PAUSED = "paused"
+
+class CharacterClass(Enum):
+    WARRIOR = "Warrior"
+    ROGUE = "Rogue"
+    MAGE = "Mage"
+    RANGER = "Ranger"
+    CLERIC = "Cleric"
+
+class CharacterClassData:
+    """Defines starting stats and equipment for each character class."""
+    
+    CLASS_DEFINITIONS = {
+        CharacterClass.WARRIOR: {
+            'description': 'Strong and tough, excels in combat',
+            'stats': {
+                StatType.STRENGTH: 15,
+                StatType.DEXTERITY: 8,
+                StatType.CONSTITUTION: 14,
+                StatType.PERCEPTION: 10,
+                StatType.LUCK: 8
+            },
+            'starting_items': [
+                (ItemType.WEAPON, 'Iron Sword', {StatType.STRENGTH: 3}),
+                (ItemType.ARMOUR, 'Chain Mail', {StatType.CONSTITUTION: 2}),
+                (ItemType.HELMET, 'Iron Helm', {StatType.CONSTITUTION: 1})
+            ]
+        },
+        CharacterClass.ROGUE: {
+            'description': 'Fast and sneaky, masters of stealth',
+            'stats': {
+                StatType.STRENGTH: 9,
+                StatType.DEXTERITY: 15,
+                StatType.CONSTITUTION: 10,
+                StatType.PERCEPTION: 13,
+                StatType.LUCK: 12
+            },
+            'starting_items': [
+                (ItemType.WEAPON, 'Steel Dagger', {StatType.DEXTERITY: 2, StatType.LUCK: 1}),
+                (ItemType.ARMOUR, 'Leather Armour', {StatType.DEXTERITY: 2}),
+                (ItemType.RING, 'Lucky Ring', {StatType.LUCK: 2})
+            ]
+        },
+        CharacterClass.MAGE: {
+            'description': 'Wise and perceptive, masters of magic',
+            'stats': {
+                StatType.STRENGTH: 7,
+                StatType.DEXTERITY: 11,
+                StatType.CONSTITUTION: 9,
+                StatType.PERCEPTION: 16,
+                StatType.LUCK: 11
+            },
+            'starting_items': [
+                (ItemType.WEAPON, 'Magic Staff', {StatType.PERCEPTION: 3}),
+                (ItemType.ARMOUR, 'Mage Robes', {StatType.PERCEPTION: 2}),
+                (ItemType.AMULET, 'Wise Pendant', {StatType.PERCEPTION: 1, StatType.LUCK: 1})
+            ]
+        },
+        CharacterClass.RANGER: {
+            'description': 'Balanced and perceptive, masters of the wild',
+            'stats': {
+                StatType.STRENGTH: 11,
+                StatType.DEXTERITY: 13,
+                StatType.CONSTITUTION: 12,
+                StatType.PERCEPTION: 14,
+                StatType.LUCK: 10
+            },
+            'starting_items': [
+                (ItemType.RANGED_WEAPON, 'Hunter\'s Bow', {StatType.DEXTERITY: 2, StatType.PERCEPTION: 1}),
+                (ItemType.AMMUNITION, 'Wooden Arrows', {StatType.DEXTERITY: 1}),
+                (ItemType.ARMOUR, 'Leather Armour', {StatType.DEXTERITY: 1}),
+                (ItemType.BOOTS, 'Swift Boots', {StatType.DEXTERITY: 2})
+            ]
+        },
+        CharacterClass.CLERIC: {
+            'description': 'Hardy and wise, blessed by divine power',
+            'stats': {
+                StatType.STRENGTH: 10,
+                StatType.DEXTERITY: 9,
+                StatType.CONSTITUTION: 15,
+                StatType.PERCEPTION: 12,
+                StatType.LUCK: 14
+            },
+            'starting_items': [
+                (ItemType.WEAPON, 'Holy Mace', {StatType.STRENGTH: 1, StatType.LUCK: 2}),
+                (ItemType.ARMOUR, 'Blessed Mail', {StatType.CONSTITUTION: 2}),
+                (ItemType.AMULET, 'Divine Symbol', {StatType.LUCK: 2, StatType.CONSTITUTION: 1})
+            ]
+        }
+    }
+    
+    @staticmethod
+    def create_character(character_class: CharacterClass, name: str = "Hero") -> Character:
+        """Create a character with class-specific stats and equipment."""
+        class_data = CharacterClassData.CLASS_DEFINITIONS[character_class]
+        
+        # Create character without random generation
+        character = Character(name, skip_random_generation=True)
+        
+        # Set character class for perk system
+        character.set_character_class(character_class)
+        
+        # Set class-specific base stats
+        for stat, value in class_data['stats'].items():
+            character.stats.base_stats[stat] = value
+        
+        # Create empty equipment
+        character.equipment = Equipment()
+        
+        # Add starting items
+        for item_type, name, stat_bonuses in class_data['starting_items']:
+            item = ItemGenerator.create_item_with_stats(name, item_type, stat_bonuses)
+            if item_type == ItemType.AMMUNITION:
+                # Add 20 arrows to start with
+                for _ in range(20):
+                    character.inventory.add_item(item)
+            else:
+                # Try to equip the item
+                slot = CharacterClassData._get_slot_for_item(item_type)
+                if slot:
+                    character.equipment.equip_item(item, slot)
+                else:
+                    # If can't equip, add to inventory
+                    character.inventory.add_item(item)
+        
+        # Update equipment bonuses and HP
+        character._update_equipment_bonuses()
+        
+        return character
+    
+    @staticmethod
+    def _get_slot_for_item(item_type: ItemType) -> Optional[EquipmentSlot]:
+        """Get the appropriate equipment slot for an item type."""
+        slot_mapping = {
+            ItemType.HELMET: EquipmentSlot.HEAD,
+            ItemType.ARMOUR: EquipmentSlot.TORSO,
+            ItemType.BOOTS: EquipmentSlot.LEGS,
+            ItemType.WEAPON: EquipmentSlot.WEAPON_1,
+            ItemType.RANGED_WEAPON: EquipmentSlot.WEAPON_1,
+            ItemType.RING: EquipmentSlot.RING_1,
+            ItemType.AMULET: EquipmentSlot.NECK
+        }
+        return slot_mapping.get(item_type)
+
+class GameStateManager:
+    """Manages game state transitions and UI rendering."""
+    
+    def __init__(self, screen: pygame.Surface, game=None):
+        self.screen = screen
+        self.game = game
+        self.current_state = GameState.MENU
+        self.selected_class = CharacterClass.WARRIOR
+        self.menu_selection = 0
+        self.class_selection = 0
+        self.game_over_selection = 0
+        self.name_entry_text = ""
+        self.name_entry_cursor_pos = 0
+        
+        # DejaVu Sans Mono Fonts - professional monospace
+        dejavu_paths = [
+            "/System/Library/Fonts/DejaVu Sans Mono.ttf",  # macOS
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",  # Linux
+            "C:/Windows/Fonts/dejavu/DejaVuSansMono.ttf",  # Windows
+            "C:/Windows/Fonts/DejaVuSansMono.ttf",  # Windows alternative
+        ]
+        
+        dejavu_font_path = None
+        for path in dejavu_paths:
+            try:
+                # Test if font file exists and can be loaded
+                test_font = pygame.font.Font(path, 24)
+                dejavu_font_path = path
+                break
+            except:
+                continue
+        
+        if dejavu_font_path:
+            # Use DejaVu Sans Mono
+            self.title_font = pygame.font.Font(dejavu_font_path, 72)
+            self.header_font = pygame.font.Font(dejavu_font_path, 48)
+            self.text_font = pygame.font.Font(dejavu_font_path, 36)
+            self.small_font = pygame.font.Font(dejavu_font_path, 24)
+        else:
+            # Fallback to system monospace font if DejaVu not found
+            self.title_font = pygame.font.SysFont("monospace", 72, bold=True)
+            self.header_font = pygame.font.SysFont("monospace", 48, bold=True)
+            self.text_font = pygame.font.SysFont("monospace", 36)
+            self.small_font = pygame.font.SysFont("monospace", 24)
+        
+        # Red on black color scheme
+        self.bg_color = (0, 0, 0)  # Pure black background
+        self.text_color = (255, 0, 0)  # Bright red text
+        self.selected_color = (255, 100, 100)  # Light red for selected items
+        self.accent_color = (255, 50, 50)  # Darker red for accents
+        self.hover_color = (255, 150, 150)  # Light red for hover
+        
+        # Menu option rectangles for mouse interaction
+        self.menu_option_rects = []  # List of (rect, index) tuples for main menu
+        self.class_option_rects = []  # List of (rect, index) tuples for class selection
+        self.game_over_option_rects = []  # List of (rect, index) tuples for game over screen
+    
+    def handle_input(self, event) -> Tuple[bool, Optional[Character]]:
+        """
+        Handle input for current state.
+        Returns (continue_game, character) where continue_game indicates if we should keep running.
+        """
+        if event.type == pygame.KEYDOWN:
+            if self.current_state == GameState.MENU:
+                return self._handle_menu_input(event.key)
+            elif self.current_state == GameState.CLASS_SELECTION:
+                return self._handle_class_selection_input(event.key)
+            elif self.current_state == GameState.NAME_ENTRY:
+                return self._handle_name_entry_input(event.key)
+            elif self.current_state == GameState.GAME_OVER:
+                return self._handle_game_over_input(event.key)
+            elif self.current_state == GameState.TARGETING:
+                return self._handle_targeting_input(event.key)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:  # Left click
+            if self.current_state == GameState.MENU:
+                return self._handle_menu_mouse_click(event.pos)
+            elif self.current_state == GameState.CLASS_SELECTION:
+                return self._handle_class_selection_mouse_click(event.pos)
+            elif self.current_state == GameState.GAME_OVER:
+                return self._handle_game_over_mouse_click(event.pos)
+        elif event.type == pygame.MOUSEMOTION:
+            self._handle_mouse_hover(event.pos)
+        
+        return True, None
+    
+    def _handle_menu_input(self, key) -> Tuple[bool, Optional[Character]]:
+        """Handle main menu input."""
+        if key in (pygame.K_UP, pygame.K_w, pygame.K_KP8):
+            self.menu_selection = max(0, self.menu_selection - 1)
+        elif key in (pygame.K_DOWN, pygame.K_s, pygame.K_KP2):
+            self.menu_selection = min(1, self.menu_selection + 1)
+        elif key == pygame.K_RETURN or key == pygame.K_SPACE:
+            if self.menu_selection == 0:  # New Game
+                self.current_state = GameState.CLASS_SELECTION
+            elif self.menu_selection == 1:  # Quit
+                return False, None
+        elif key == pygame.K_ESCAPE:
+            return False, None
+        
+        return True, None
+    
+    def _handle_class_selection_input(self, key) -> Tuple[bool, Optional[Character]]:
+        """Handle class selection input."""
+        classes = list(CharacterClass)
+        
+        if key in (pygame.K_UP, pygame.K_w, pygame.K_KP8):
+            self.class_selection = (self.class_selection - 1) % len(classes)
+        elif key in (pygame.K_DOWN, pygame.K_s, pygame.K_KP2):
+            self.class_selection = (self.class_selection + 1) % len(classes)
+        elif key == pygame.K_RETURN or key == pygame.K_SPACE:
+            # Go to name entry screen
+            self.current_state = GameState.NAME_ENTRY
+            return True, None
+        elif key == pygame.K_ESCAPE:
+            self.current_state = GameState.MENU
+            
+        return True, None
+    
+    def _handle_name_entry_input(self, key) -> Tuple[bool, Optional[Character]]:
+        """Handle name entry input."""
+        if key == pygame.K_RETURN:
+            # Confirm name and create character
+            if self.name_entry_text.strip():
+                selected_class = list(CharacterClass)[self.class_selection]
+                character = CharacterClassData.create_character(selected_class)
+                character.name = self.name_entry_text.strip()
+                self.current_state = GameState.PLAYING
+                return True, character
+        elif key == pygame.K_BACKSPACE:
+            # Delete character
+            if self.name_entry_cursor_pos > 0:
+                self.name_entry_text = (self.name_entry_text[:self.name_entry_cursor_pos-1] + 
+                                      self.name_entry_text[self.name_entry_cursor_pos:])
+                self.name_entry_cursor_pos -= 1
+        elif key == pygame.K_ESCAPE:
+            # Go back to class selection
+            self.current_state = GameState.CLASS_SELECTION
+            self.name_entry_text = ""
+            self.name_entry_cursor_pos = 0
+        elif key == pygame.K_LEFT and self.name_entry_cursor_pos > 0:
+            # Move cursor left
+            self.name_entry_cursor_pos -= 1
+        elif key == pygame.K_RIGHT and self.name_entry_cursor_pos < len(self.name_entry_text):
+            # Move cursor right
+            self.name_entry_cursor_pos += 1
+        elif key == pygame.K_DELETE and self.name_entry_cursor_pos < len(self.name_entry_text):
+            # Delete character at cursor
+            self.name_entry_text = (self.name_entry_text[:self.name_entry_cursor_pos] + 
+                                  self.name_entry_text[self.name_entry_cursor_pos+1:])
+        elif key == pygame.K_HOME:
+            # Move cursor to beginning
+            self.name_entry_cursor_pos = 0
+        elif key == pygame.K_END:
+            # Move cursor to end
+            self.name_entry_cursor_pos = len(self.name_entry_text)
+        elif len(self.name_entry_text) < 20:  # Limit name length
+            # Add character
+            char = None
+            if pygame.K_a <= key <= pygame.K_z:
+                char = chr(key)
+            elif pygame.K_0 <= key <= pygame.K_9:
+                char = chr(key)
+            elif key == pygame.K_SPACE:
+                char = ' '
+            elif key == pygame.K_MINUS:
+                char = '-'
+            elif key == pygame.K_UNDERSCORE:
+                char = '_'
+            
+            if char:
+                self.name_entry_text = (self.name_entry_text[:self.name_entry_cursor_pos] + 
+                                      char + self.name_entry_text[self.name_entry_cursor_pos:])
+                self.name_entry_cursor_pos += 1
+        
+        return True, None
+    
+    def _handle_targeting_input(self, key) -> Tuple[bool, Optional[Character]]:
+        """Handle input while in targeting mode."""
+        if key == pygame.K_ESCAPE:
+            self.current_state = GameState.PLAYING
+        elif key == pygame.K_RETURN:
+            # Fire projectile if target is valid
+            game = self._get_game_instance()
+            if game and game.targeting_valid:
+                # Check if player has a ranged weapon equipped
+                weapon = game.player.character.equipment.get_equipped_item(EquipmentSlot.WEAPON_1)
+                if weapon and weapon.is_ranged_weapon():
+                    # Check if player has ammunition
+                    if game.player.character.has_ammunition():
+                        # Schedule ranged attack
+                        dexterity = game.player.character.stats.get_total_stat(StatType.DEXTERITY)
+                        game.turn_manager.schedule_player_action(
+                            ActionType.RANGED_ATTACK,
+                            target_pos=(game.targeting_x, game.targeting_y),
+                            dexterity=dexterity
+                        )
+                        game.add_to_log("You fire your bow!", (255, 255, 255))
+                    else:
+                        game.add_to_log("You have no arrows!", (255, 0, 0))
+                else:
+                    game.add_to_log("You need a bow equipped!", (255, 0, 0))
+            self.current_state = GameState.PLAYING
+        elif key in (pygame.K_UP, pygame.K_w, pygame.K_KP8):
+            # Move cursor up
+            game = self._get_game_instance()
+            if game:
+                game.targeting_y = max(0, game.targeting_y - 1)
+                game.update_targeting_validity()
+        elif key in (pygame.K_DOWN, pygame.K_s, pygame.K_KP2):
+            # Move cursor down
+            game = self._get_game_instance()
+            if game:
+                game.targeting_y = min(game.dungeon.height - 1, game.targeting_y + 1)
+                game.update_targeting_validity()
+        elif key in (pygame.K_LEFT, pygame.K_a, pygame.K_KP4):
+            # Move cursor left
+            game = self._get_game_instance()
+            if game:
+                game.targeting_x = max(0, game.targeting_x - 1)
+                game.update_targeting_validity()
+        elif key in (pygame.K_RIGHT, pygame.K_d, pygame.K_KP6):
+            # Move cursor right
+            game = self._get_game_instance()
+            if game:
+                game.targeting_x = min(game.dungeon.width - 1, game.targeting_x + 1)
+                game.update_targeting_validity()
+        elif key in (pygame.K_KP7,):  # Northwest
+            game = self._get_game_instance()
+            if game:
+                game.targeting_x = max(0, game.targeting_x - 1)
+                game.targeting_y = max(0, game.targeting_y - 1)
+                game.update_targeting_validity()
+        elif key in (pygame.K_KP9,):  # Northeast
+            game = self._get_game_instance()
+            if game:
+                game.targeting_x = min(game.dungeon.width - 1, game.targeting_x + 1)
+                game.targeting_y = max(0, game.targeting_y - 1)
+                game.update_targeting_validity()
+        elif key in (pygame.K_KP1,):  # Southwest
+            game = self._get_game_instance()
+            if game:
+                game.targeting_x = max(0, game.targeting_x - 1)
+                game.targeting_y = min(game.dungeon.height - 1, game.targeting_y + 1)
+                game.update_targeting_validity()
+        elif key in (pygame.K_KP3,):  # Southeast
+            game = self._get_game_instance()
+            if game:
+                game.targeting_x = min(game.dungeon.width - 1, game.targeting_x + 1)
+                game.targeting_y = min(game.dungeon.height - 1, game.targeting_y + 1)
+                game.update_targeting_validity()
+        
+        return True, None
+    
+    def _get_game_instance(self) -> Optional['Game']:
+        """Get the Game instance from the main module."""
+        import sys
+        main_module = sys.modules.get('__main__')
+        if main_module and hasattr(main_module, 'game'):
+            return main_module.game
+        return None
+        classes = list(CharacterClass)
+        
+        if key == pygame.K_UP or key == pygame.K_w:
+            self.class_selection = (self.class_selection - 1) % len(classes)
+        elif key == pygame.K_DOWN or key == pygame.K_s:
+            self.class_selection = (self.class_selection + 1) % len(classes)
+        elif key == pygame.K_RETURN or key == pygame.K_SPACE:
+            # Create character and start game
+            selected_class = classes[self.class_selection]
+            character = CharacterClassData.create_character(selected_class, "Adventurer")
+            self.current_state = GameState.PLAYING
+            return True, character
+        elif key == pygame.K_ESCAPE:
+            self.current_state = GameState.MENU
+        
+        return True, None
+    
+    def _handle_game_over_input(self, key) -> Tuple[bool, Optional[Character]]:
+        """Handle game over screen input."""
+        if key in (pygame.K_UP, pygame.K_w, pygame.K_KP8):
+            self.game_over_selection = max(0, self.game_over_selection - 1)
+        elif key in (pygame.K_DOWN, pygame.K_s, pygame.K_KP2):
+            self.game_over_selection = min(1, self.game_over_selection + 1)
+        elif key == pygame.K_RETURN or key == pygame.K_SPACE:
+            if self.game_over_selection == 0:  # Restart
+                self.current_state = GameState.CLASS_SELECTION
+                self.class_selection = 0
+            elif self.game_over_selection == 1:  # Quit
+                return False, None
+        elif key == pygame.K_ESCAPE:
+            return False, None
+        
+        return True, None
+    
+    def render(self):
+        """Render the current state."""
+        self.screen.fill(self.bg_color)
+        
+        if self.current_state == GameState.MENU:
+            self._render_main_menu()
+        elif self.current_state == GameState.CLASS_SELECTION:
+            self._render_class_selection()
+        elif self.current_state == GameState.NAME_ENTRY:
+            self._render_name_entry()
+        elif self.current_state == GameState.GAME_OVER:
+            self._render_game_over()
+    
+    def _render_main_menu(self):
+        """Render the main menu."""
+        # Clear previous option rectangles
+        self.menu_option_rects = []
+        
+        # Title
+        title_surface = self.title_font.render("MYTHICA", True, self.accent_color)
+        title_rect = title_surface.get_rect(center=(512, 150))
+        self.screen.blit(title_surface, title_rect)
+        
+        subtitle_surface = self.text_font.render("DUNGEON CRAWLER", True, self.text_color)
+        subtitle_rect = subtitle_surface.get_rect(center=(512, 200))
+        self.screen.blit(subtitle_surface, subtitle_rect)
+        
+        # Menu options
+        menu_options = ["NEW GAME", "QUIT"]
+        start_y = 300
+        
+        for i, option in enumerate(menu_options):
+            color = self.selected_color if i == self.menu_selection else self.text_color
+            text_surface = self.header_font.render(option, True, color)
+            text_rect = text_surface.get_rect(center=(512, start_y + i * 60))
+            self.screen.blit(text_surface, text_rect)
+            
+            # Add padding to the clickable area
+            padded_rect = text_rect.inflate(40, 20)
+            self.menu_option_rects.append((padded_rect, i))
+        
+        # Controls
+        controls = [
+            "USE W/S OR UP/DOWN TO NAVIGATE",
+            "CLICK OR PRESS ENTER/SPACE TO SELECT",
+            "PRESS ESCAPE TO QUIT"
+        ]
+        
+        for i, control in enumerate(controls):
+            control_surface = self.small_font.render(control, True, self.text_color)
+            control_rect = control_surface.get_rect(center=(512, 500 + i * 25))
+            self.screen.blit(control_surface, control_rect)
+    
+    def _render_class_selection(self):
+        """Render the class selection screen."""
+        # Clear previous option rectangles
+        self.class_option_rects = []
+        
+        # Draw dividing line
+        pygame.draw.line(self.screen, self.accent_color, (256, 0), (256, 768), 2)
+        
+        # Load portraits if not already loaded
+        if not hasattr(self, 'class_portraits'):
+            self.class_portraits = {}
+            assets_path = Path(__file__).parent.parent / "assets"
+            portrait_sheet = pygame.image.load(str(assets_path / "oryx_roguelike" / "Interface_Portraits.png")).convert_alpha()
+            # Portrait positions in the sheet (x, y)
+            portrait_positions = {
+                CharacterClass.WARRIOR: (0, 0),    # First portrait - warrior
+                CharacterClass.ROGUE: (48, 0),     # Second portrait - rogue/thief
+                CharacterClass.MAGE: (96, 0),      # Third portrait - mage/wizard
+                CharacterClass.RANGER: (144, 0),   # Fourth portrait - ranger/archer
+                CharacterClass.CLERIC: (192, 0)    # Fifth portrait - cleric/priest
+            }
+            for char_class, pos in portrait_positions.items():
+                portrait = pygame.Surface((48, 48), pygame.SRCALPHA)
+                portrait.blit(portrait_sheet, (0, 0), (pos[0], pos[1], 48, 48))
+                self.class_portraits[char_class] = portrait
+
+        # Class list (left side)
+        classes = list(CharacterClass)
+        start_y = 100
+        spacing = 80  # Increased spacing to accommodate portraits
+        
+        for i, char_class in enumerate(classes):
+            y_pos = start_y + i * spacing
+            color = self.selected_color if i == self.class_selection else self.text_color
+            
+            # Draw portrait
+            portrait = self.class_portraits[char_class]
+            portrait_rect = portrait.get_rect(midleft=(32, y_pos))
+            self.screen.blit(portrait, portrait_rect)
+            
+            # Draw class name
+            text_surface = self.text_font.render(char_class.value.upper(), True, color)
+            text_rect = text_surface.get_rect(center=(160, y_pos))
+            self.screen.blit(text_surface, text_rect)
+            
+            # Add padding to the clickable area (include portrait area)
+            padded_rect = pygame.Rect(16, y_pos - 30, 224, 60)
+            self.class_option_rects.append((padded_rect, i))
+        
+        # Class details (right side)
+        selected_class = classes[self.class_selection]
+        class_data = CharacterClassData.CLASS_DEFINITIONS[selected_class]
+        right_x = 640  # Center point for right side
+        
+        # Draw large portrait for selected class
+        portrait = self.class_portraits[selected_class]
+        large_portrait = pygame.transform.scale(portrait, (96, 96))
+        portrait_rect = large_portrait.get_rect(midtop=(right_x, 40))
+        self.screen.blit(large_portrait, portrait_rect)
+
+        # Class name and description
+        class_surface = self.title_font.render(selected_class.value.upper(), True, self.accent_color)
+        class_rect = class_surface.get_rect(center=(right_x, 160))
+        self.screen.blit(class_surface, class_rect)
+        
+        # Description - split into two lines
+        desc_y = 220
+        desc = class_data['description'].upper()
+        words = desc.split()
+        mid = len(words) // 2
+        line1 = ' '.join(words[:mid])
+        line2 = ' '.join(words[mid:])
+        
+        line1_surface = self.text_font.render(line1, True, self.text_color)
+        line1_rect = line1_surface.get_rect(center=(right_x, desc_y))
+        self.screen.blit(line1_surface, line1_rect)
+        
+        line2_surface = self.text_font.render(line2, True, self.text_color)
+        line2_rect = line2_surface.get_rect(center=(right_x, desc_y + 30))
+        self.screen.blit(line2_surface, line2_rect)
+        
+        # Stats
+        stats_y = 320
+        stats_header_surface = self.header_font.render("STARTING STATS", True, self.accent_color)
+        stats_header_rect = stats_header_surface.get_rect(center=(right_x, stats_y))
+        self.screen.blit(stats_header_surface, stats_header_rect)
+        stats_y += 50
+        
+        # Stats in a clean layout
+        for stat, value in class_data['stats'].items():
+            stat_text = f"{stat.value} {value}"
+            stat_surface = self.text_font.render(stat_text.upper(), True, self.text_color)
+            stat_rect = stat_surface.get_rect(center=(right_x, stats_y))
+            self.screen.blit(stat_surface, stat_rect)
+            stats_y += 30
+        
+        # Equipment
+        equip_y = stats_y + 40
+        equip_header_surface = self.header_font.render("STARTING EQUIPMENT", True, self.accent_color)
+        equip_header_rect = equip_header_surface.get_rect(center=(right_x, equip_y))
+        self.screen.blit(equip_header_surface, equip_header_rect)
+        equip_y += 50
+        
+        # Equipment items in a clean layout
+        for item_type, item_name, bonuses in class_data['starting_items']:
+            item_surface = self.text_font.render(item_name.upper(), True, self.text_color)
+            item_rect = item_surface.get_rect(center=(right_x, equip_y))
+            self.screen.blit(item_surface, item_rect)
+            equip_y += 30
+    
+    def _render_name_entry(self):
+        """Render the name entry screen."""
+        # Title
+        title_surface = self.title_font.render("ENTER YOUR NAME", True, self.accent_color)
+        title_rect = title_surface.get_rect(center=(512, 200))
+        self.screen.blit(title_surface, title_rect)
+        
+        # Selected class info
+        classes = list(CharacterClass)
+        selected_class = classes[self.class_selection]
+        class_text = f"Class: {selected_class.value}"
+        class_surface = self.header_font.render(class_text, True, self.text_color)
+        class_rect = class_surface.get_rect(center=(512, 250))
+        self.screen.blit(class_surface, class_rect)
+        
+        # Name input field
+        input_y = 350
+        input_width = 400
+        input_height = 50
+        input_x = (1024 - input_width) // 2
+        
+        # Input field background - red on black theme
+        pygame.draw.rect(self.screen, (20, 0, 0), (input_x, input_y, input_width, input_height))  # Dark red background
+        pygame.draw.rect(self.screen, (255, 0, 0), (input_x, input_y, input_width, input_height), 2)  # Red border
+        
+        # Name text
+        display_text = self.name_entry_text
+        if not display_text:
+            display_text = "Enter your name..."
+            text_color = (100, 0, 0)  # Dark red placeholder
+        else:
+            text_color = (255, 0, 0)  # Bright red text
+        
+        # Render text
+        text_surface = self.text_font.render(display_text, True, text_color)
+        text_rect = text_surface.get_rect(center=(input_x + input_width // 2, input_y + input_height // 2))
+        self.screen.blit(text_surface, text_rect)
+        
+        # Simple cursor indicator (just show a blinking underscore at the end)
+        if display_text and display_text != "Enter your name...":
+            import time
+            if int(time.time() * 2) % 2:  # Blink every 0.5 seconds
+                cursor_x = text_rect.right + 5
+                cursor_y = text_rect.centery
+                pygame.draw.line(self.screen, (255, 0, 0), (cursor_x, cursor_y - 10), (cursor_x, cursor_y + 10), 2)
+        
+        # Instructions
+        instructions = [
+            "Type your name and press ENTER to continue",
+            "BACKSPACE: Delete | LEFT/RIGHT: Move cursor | ESC: Back"
+        ]
+        for i, instruction in enumerate(instructions):
+            instruction_surface = self.small_font.render(instruction, True, self.text_color)
+            instruction_rect = instruction_surface.get_rect(center=(512, 450 + i * 25))
+            self.screen.blit(instruction_surface, instruction_rect)
+    
+    def _render_game_over(self):
+        """Render the game over screen."""
+        # Clear previous option rectangles
+        self.game_over_option_rects = []
+        
+        # Semi-transparent overlay
+        overlay = pygame.Surface((1024, 768))
+        overlay.set_alpha(200)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+        
+        # Game Over title
+        game_over_surface = self.title_font.render("GAME OVER", True, (255, 100, 100))
+        game_over_rect = game_over_surface.get_rect(center=(512, 150))
+        self.screen.blit(game_over_surface, game_over_rect)
+        
+        # Score display
+        if self.game and hasattr(self.game, 'final_score'):
+            score_text = f"FINAL SCORE: {self.game.final_score}"
+            score_surface = self.header_font.render(score_text, True, (255, 255, 0))
+            score_rect = score_surface.get_rect(center=(512, 200))
+            self.screen.blit(score_surface, score_rect)
+        
+        # High scores
+        if self.game and hasattr(self.game, 'high_scores') and self.game.high_scores:
+            high_scores_surface = self.small_font.render("HIGH SCORES", True, (255, 255, 255))
+            high_scores_rect = high_scores_surface.get_rect(center=(512, 250))
+            self.screen.blit(high_scores_surface, high_scores_rect)
+            
+            # Show top 5 high scores
+            for i, score_entry in enumerate(self.game.high_scores[:5]):
+                y_pos = 280 + i * 25
+                name = score_entry.get('name', 'Unknown')
+                score_text = f"{i+1}. {name} - {score_entry['score']} - Level {score_entry['level']} - {score_entry['class']}"
+                color = (255, 255, 0) if i == 0 else (200, 200, 200)
+                score_entry_surface = self.small_font.render(score_text, True, color)
+                score_entry_rect = score_entry_surface.get_rect(center=(512, y_pos))
+                self.screen.blit(score_entry_surface, score_entry_rect)
+        
+        # Options
+        options = ["RESTART", "QUIT TO MENU"]
+        start_y = 450
+        
+        for i, option in enumerate(options):
+            color = self.selected_color if i == self.game_over_selection else self.text_color
+            option_surface = self.header_font.render(option, True, color)
+            option_rect = option_surface.get_rect(center=(512, start_y + i * 60))
+            self.screen.blit(option_surface, option_rect)
+            
+            # Add padding to the clickable area
+            padded_rect = option_rect.inflate(40, 20)
+            self.game_over_option_rects.append((padded_rect, i))
+        
+        # Controls
+        controls_surface = self.small_font.render(
+            "W/S: NAVIGATE * CLICK OR PRESS ENTER TO SELECT * ESCAPE: QUIT",
+            True,
+            self.text_color
+        )
+        controls_rect = controls_surface.get_rect(center=(512, 600))
+        self.screen.blit(controls_surface, controls_rect)
+    
+    def _handle_menu_mouse_click(self, pos: Tuple[int, int]) -> Tuple[bool, Optional[Character]]:
+        """Handle mouse clicks in the main menu."""
+        for rect, index in self.menu_option_rects:
+            if rect.collidepoint(pos):
+                self.menu_selection = index
+                if index == 0:  # New Game
+                    self.current_state = GameState.CLASS_SELECTION
+                    return True, None
+                elif index == 1:  # Quit
+                    return False, None
+        return True, None
+
+    def _handle_class_selection_mouse_click(self, pos: Tuple[int, int]) -> Tuple[bool, Optional[Character]]:
+        """Handle mouse clicks in the class selection screen."""
+        for rect, index in self.class_option_rects:
+            if rect.collidepoint(pos):
+                self.class_selection = index
+                classes = list(CharacterClass)
+                selected_class = classes[self.class_selection]
+                character = CharacterClassData.create_character(selected_class, "Adventurer")
+                self.current_state = GameState.PLAYING
+                return True, character
+        return True, None
+
+    def _handle_game_over_mouse_click(self, pos: Tuple[int, int]) -> Tuple[bool, Optional[Character]]:
+        """Handle mouse clicks in the game over screen."""
+        for rect, index in self.game_over_option_rects:
+            if rect.collidepoint(pos):
+                self.game_over_selection = index
+                if index == 0:  # Restart
+                    self.current_state = GameState.CLASS_SELECTION
+                    self.class_selection = 0
+                    return True, None
+                elif index == 1:  # Quit
+                    return False, None
+        return True, None
+
+    def _handle_mouse_hover(self, pos: Tuple[int, int]):
+        """Handle mouse hover effects for menu options."""
+        if self.current_state == GameState.MENU:
+            for rect, index in self.menu_option_rects:
+                if rect.collidepoint(pos):
+                    self.menu_selection = index
+                    break
+        elif self.current_state == GameState.CLASS_SELECTION:
+            for rect, index in self.class_option_rects:
+                if rect.collidepoint(pos):
+                    self.class_selection = index
+                    break
+        elif self.current_state == GameState.GAME_OVER:
+            for rect, index in self.game_over_option_rects:
+                if rect.collidepoint(pos):
+                    self.game_over_selection = index
+                    break
+
+    def show_game_over(self):
+        """Transition to game over state."""
+        self.current_state = GameState.GAME_OVER
+        self.game_over_selection = 0 

@@ -9,6 +9,7 @@ import sys
 import random
 import math
 import json
+import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Set
 from enum import Enum
@@ -412,22 +413,28 @@ class Player:
 class Game:
     """Main game class."""
     
-    def __init__(self):
+    def __init__(self, god_mode=False):
         pygame.init()
         self.screen = pygame.display.set_mode((1024, 768))
         pygame.display.set_caption("Mythica Dungeon Crawler")
         self.clock = pygame.time.Clock()
         self.running = True
         
+        # God mode flag
+        self.god_mode = god_mode
+        
         # Game state
         self.current_area = GameArea.TOWN
         self.dungeon_level = 1
         self.max_dungeon_level = 5
+        self.custom_town_data = None  # Initialize custom town data
         
         # Auto-explore state
         self.auto_explore_active = False
         self.auto_explore_path = []
         self.auto_explore_target = None
+        self.auto_explore_attack_mode = False  # New mode that attacks enemies
+        self.auto_explore_failed_attempts = 0  # Track failed attempts to prevent infinite loops
         
         # Click navigation
         self.click_path = []
@@ -438,6 +445,17 @@ class Game:
         self.is_dead = False
         self.final_score = 0
         self.high_scores = self._load_high_scores()
+        
+        # Pause state
+        self.is_paused = False
+        
+        # Skill point allocation
+        self.skill_popup_open = False
+        self.selected_stat = None
+        
+        # Log popup
+        self.log_popup_open = False
+        self.log_popup_scroll = 0
         
         # Initialize sprite system
         self.sprite_manager = GameSpriteManager()
@@ -588,7 +606,11 @@ class Game:
                 self.visible_tiles.add((player_x + dx, player_y + dy))
                 self.explored_tiles.add((player_x + dx, player_y + dy))
         
-        # Calculate visible tiles using ray casting for the rest
+        # Cast rays in all directions for better wall discovery
+        for angle in range(0, 360, 3):  # Cast rays every 3 degrees for better coverage
+            self._cast_visibility_ray(player_x, player_y, angle, sight_range)
+        
+        # Also do grid-based ray casting for comprehensive coverage
         for dx in range(-sight_range, sight_range + 1):
             for dy in range(-sight_range, sight_range + 1):
                 # Skip if outside sight range
@@ -605,6 +627,54 @@ class Game:
         
         # Update last known positions of visible entities
         self._update_last_known_positions()
+    
+    def _cast_visibility_ray(self, start_x, start_y, angle, max_distance):
+        """Cast a visibility ray in a specific direction."""
+        import math
+        
+        # Convert angle to radians
+        angle_rad = math.radians(angle)
+        
+        # Calculate direction vector
+        dx = math.cos(angle_rad)
+        dy = math.sin(angle_rad)
+        
+        # Cast ray step by step
+        for distance in range(1, max_distance + 1):
+            # Calculate position along ray
+            x = int(start_x + dx * distance)
+            y = int(start_y + dy * distance)
+            
+            # Check bounds
+            if self.current_area == GameArea.TOWN:
+                if (x < 0 or x >= self.town.width or y < 0 or y >= self.town.height):
+                    break
+                cell = self.town.get_cell(x, y)
+            else:
+                if (x < 0 or x >= self.dungeon.width or y < 0 or y >= self.dungeon.height):
+                    break
+                cell = self.dungeon.get_cell(x, y)
+            
+            # Mark this tile as explored
+            self.explored_tiles.add((x, y))
+            
+            # Check if this is a wall or building
+            if self.current_area == GameArea.TOWN:
+                if cell in [CellType.TOWN_WALL, CellType.TOWN_BUILDING]:
+                    # Wall blocks further vision
+                    self.visible_tiles.add((x, y))
+                    break
+                else:
+                    # Floor or door - can see through
+                    self.visible_tiles.add((x, y))
+            else:
+                if cell == CellType.WALL:
+                    # Wall blocks further vision
+                    self.visible_tiles.add((x, y))
+                    break
+                else:
+                    # Floor or door - can see through
+                    self.visible_tiles.add((x, y))
     
     def _is_visible(self, start_x, start_y, end_x, end_y):
         """Check if a position is visible using ray casting."""
@@ -688,8 +758,12 @@ class Game:
     
     def _create_town(self):
         """Create town, loading custom data if available."""
-        if self._load_custom_town():
+        # Only load custom town if we don't have custom_town_data set to None (restart case)
+        if self.custom_town_data is None and self._load_custom_town():
             print("Loaded custom town from saved_town.json")
+            return self._create_town_from_data()
+        elif self.custom_town_data is not None:
+            print("Using existing custom town data")
             return self._create_town_from_data()
         else:
             print("Using generated town layout")
@@ -767,6 +841,17 @@ class Game:
     
     def start_game(self, character: Character):
         """Start the game with a character."""
+        # Reset all game state flags
+        self.is_dead = False
+        self.is_paused = False
+        self.final_score = 0
+        
+        # Apply god mode effects if enabled
+        if self.god_mode:
+            character.inventory.gold = 10000
+            character.god_mode = True  # Set god mode flag on character
+            self.add_to_log("GOD MODE ENABLED: Invincible + 10000 gold!", (255, 255, 0))
+        
         self.player = Player(character, self.town.width // 2, self.town.height // 2)
         self.current_area = GameArea.TOWN
         self.update_camera()
@@ -778,21 +863,27 @@ class Game:
         self.log_messages.append((message, color))
         if len(self.log_messages) > self.max_log_messages:
             self.log_messages.pop(0)
+        
+        # Also print to terminal
+        print(f"LOG: {message}")
     
     def update_camera(self):
         """Update camera position to follow player."""
         if self.player:
+            # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
+            gameplay_height = self.screen.get_height() - 60
+            
             # Center camera on player
             self.camera_x = self.player.x - self.screen.get_width() // (2 * self.tile_size)
-            self.camera_y = self.player.y - self.screen.get_height() // (2 * self.tile_height)
+            self.camera_y = self.player.y - gameplay_height // (2 * self.tile_height)
             
             # Keep camera within bounds
             if self.current_area == GameArea.TOWN:
                 max_camera_x = max(0, self.town.width - self.screen.get_width() // self.tile_size)
-                max_camera_y = max(0, self.town.height - self.screen.get_height() // self.tile_height)
+                max_camera_y = max(0, self.town.height - gameplay_height // self.tile_height)
             else:
                 max_camera_x = max(0, self.dungeon.width - self.screen.get_width() // self.tile_size)
-                max_camera_y = max(0, self.dungeon.height - self.screen.get_height() // self.tile_height)
+                max_camera_y = max(0, self.dungeon.height - gameplay_height // self.tile_height)
             
             self.camera_x = max(0, min(self.camera_x, max_camera_x))
             self.camera_y = max(0, min(self.camera_y, max_camera_y))
@@ -821,16 +912,24 @@ class Game:
         if not self.player:
             return
         
+        # Handle popup input first
+        if self.skill_popup_open:
+            self._handle_skill_popup_input(key)
+            return
+        elif self.log_popup_open:
+            self._handle_log_popup_input(key)
+            return
+        
         current_time = pygame.time.get_ticks() / 1000.0
         
-        # Movement
-        if key == pygame.K_w or key == pygame.K_UP:
+        # Movement (numpad only)
+        if key == pygame.K_UP:
             self._try_move_player(0, -1, current_time)
-        elif key == pygame.K_s or key == pygame.K_DOWN:
+        elif key == pygame.K_DOWN:
             self._try_move_player(0, 1, current_time)
-        elif key == pygame.K_a or key == pygame.K_LEFT:
+        elif key == pygame.K_LEFT:
             self._try_move_player(-1, 0, current_time)
-        elif key == pygame.K_d or key == pygame.K_RIGHT:
+        elif key == pygame.K_RIGHT:
             self._try_move_player(1, 0, current_time)
         
         # Diagonal movement
@@ -842,6 +941,8 @@ class Game:
             self._try_move_player(1, -1, current_time)
         elif key == pygame.K_KP4:  # West
             self._try_move_player(-1, 0, current_time)
+        elif key == pygame.K_KP5:  # Wait (numpad 5)
+            self.add_to_log("You wait...", (200, 200, 200))
         elif key == pygame.K_KP6:  # East
             self._try_move_player(1, 0, current_time)
         elif key == pygame.K_KP1:  # Southwest
@@ -856,8 +957,6 @@ class Game:
             self._show_character_sheet()
         elif key == pygame.K_i:  # Inventory
             self._show_inventory()
-        elif key == pygame.K_SPACE:  # Wait
-            self.add_to_log("You wait...", (200, 200, 200))
         elif key == pygame.K_ESCAPE:
             self.running = False
         
@@ -872,8 +971,16 @@ class Game:
             self._try_go_up_stairs()
         elif key == pygame.K_o:  # Auto-explore toggle
             self._toggle_auto_explore()
+        elif key == pygame.K_TAB:  # Auto-explore with attack
+            self._toggle_auto_explore_attack()
         elif key == pygame.K_f:  # Attack adjacent enemies
             self._try_attack_adjacent()
+        elif key == pygame.K_SPACE:  # Pause/unpause game
+            self._toggle_pause()
+        elif key == pygame.K_s:  # Skill point allocation
+            self._toggle_skill_popup()
+        elif key == pygame.K_l:  # Log popup
+            self._toggle_log_popup()
         elif key == pygame.K_r:  # Restart game
             self._restart_game()
     
@@ -885,6 +992,7 @@ class Game:
         # Cancel auto-explore on manual movement
         if self.auto_explore_active:
             self.auto_explore_active = False
+            self.auto_explore_attack_mode = False
             self.auto_explore_path = []
             self.auto_explore_target = None
             self.add_to_log("Auto-explore cancelled", (255, 255, 255))
@@ -981,38 +1089,26 @@ class Game:
             # Clear level-specific data for new dungeon
             self._clear_level_data_for_new_level()
             
-            self.dungeon = Dungeon(50, 40, self.dungeon_level)
-            
-            # Place player at staircase up position (stairs going up)
-            if self.dungeon.staircase_up_pos:
-                self.player.x, self.player.y = self.dungeon.staircase_up_pos
-                print(f"DEBUG: EMERGED at stairs up: ({self.player.x}, {self.player.y})")
-                self.add_to_log(f"EMERGED at stairs up: ({self.player.x}, {self.player.y})", (0, 255, 255))
-            else:
-                # Fallback to start position
-                self.player.x, self.player.y = self.dungeon.start_pos
-                print(f"DEBUG: EMERGED at start pos: ({self.player.x}, {self.player.y})")
-                self.add_to_log(f"EMERGED at start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
-            self.update_camera()
-            
-            # Spawn enemies
-            self.enemy_manager.spawn_enemies_in_dungeon(
-                self.dungeon, 
-                player_start_pos=self.dungeon.start_pos,
-                dungeon_level=self.dungeon_level
-            )
+        self.dungeon = Dungeon(50, 40, self.dungeon_level)
+        
+        # Place player at staircase up position (stairs going up)
+        if self.dungeon.staircase_up_pos:
+            self.player.x, self.player.y = self.dungeon.staircase_up_pos
+            print(f"DEBUG: EMERGED at stairs up: ({self.player.x}, {self.player.y})")
+            self.add_to_log(f"EMERGED at stairs up: ({self.player.x}, {self.player.y})", (0, 255, 255))
         else:
-            # Restored level, place player at staircase up position (stairs going up)
-            if self.dungeon.staircase_up_pos:
-                self.player.x, self.player.y = self.dungeon.staircase_up_pos
-                print(f"DEBUG: EMERGED at stairs up: ({self.player.x}, {self.player.y})")
-                self.add_to_log(f"EMERGED at stairs up: ({self.player.x}, {self.player.y})", (0, 255, 255))
-            else:
-                # Fallback to start position
-                self.player.x, self.player.y = self.dungeon.start_pos
-                print(f"DEBUG: EMERGED at start pos: ({self.player.x}, {self.player.y})")
-                self.add_to_log(f"EMERGED at start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
-            self.update_camera()
+            # Fallback to start position
+            self.player.x, self.player.y = self.dungeon.start_pos
+            print(f"DEBUG: EMERGED at start pos: ({self.player.x}, {self.player.y})")
+            self.add_to_log(f"EMERGED at start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
+        self.update_camera()
+        
+        # Spawn enemies
+        self.enemy_manager.spawn_enemies_in_dungeon(
+            self.dungeon, 
+            player_start_pos=self.dungeon.start_pos,
+            dungeon_level=self.dungeon_level
+        )
         
         self.add_to_log(f"Entered dungeon level {self.dungeon_level}!", (255, 200, 100))
         self.add_to_log("The air is thick with danger...", (255, 100, 100))
@@ -1037,38 +1133,26 @@ class Game:
             # Clear level-specific data for new level
             self._clear_level_data_for_new_level()
             
-            self.dungeon = Dungeon(50, 40, self.dungeon_level)
-            
-            # Place player at staircase up position (stairs going up)
-            if self.dungeon.staircase_up_pos:
-                self.player.x, self.player.y = self.dungeon.staircase_up_pos
-                print(f"DEBUG: DESCENDED to stairs up: ({self.player.x}, {self.player.y})")
-                self.add_to_log(f"DESCENDED to stairs up: ({self.player.x}, {self.player.y})", (0, 255, 255))
-            else:
-                # Fallback to start position
-                self.player.x, self.player.y = self.dungeon.start_pos
-                print(f"DEBUG: DESCENDED to start pos: ({self.player.x}, {self.player.y})")
-                self.add_to_log(f"DESCENDED to start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
-            self.update_camera()
-            
-            # Spawn enemies
-            self.enemy_manager.spawn_enemies_in_dungeon(
-                self.dungeon,
-                player_start_pos=self.dungeon.start_pos,
-                dungeon_level=self.dungeon_level
-            )
+        self.dungeon = Dungeon(50, 40, self.dungeon_level)
+        
+        # Place player at staircase up position (stairs going up)
+        if self.dungeon.staircase_up_pos:
+            self.player.x, self.player.y = self.dungeon.staircase_up_pos
+            print(f"DEBUG: DESCENDED to stairs up: ({self.player.x}, {self.player.y})")
+            self.add_to_log(f"DESCENDED to stairs up: ({self.player.x}, {self.player.y})", (0, 255, 255))
         else:
-            # Restored level, place player at staircase up position (coming from above)
-            if self.dungeon.staircase_up_pos:
-                self.player.x, self.player.y = self.dungeon.staircase_up_pos
-                print(f"DEBUG: DESCENDED to stairs up: ({self.player.x}, {self.player.y})")
-                self.add_to_log(f"DESCENDED to stairs up: ({self.player.x}, {self.player.y})", (0, 255, 255))
-            else:
-                # Fallback to start position
-                self.player.x, self.player.y = self.dungeon.start_pos
-                print(f"DEBUG: DESCENDED to start pos: ({self.player.x}, {self.player.y})")
-                self.add_to_log(f"DESCENDED to start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
-            self.update_camera()
+            # Fallback to start position
+            self.player.x, self.player.y = self.dungeon.start_pos
+            print(f"DEBUG: DESCENDED to start pos: ({self.player.x}, {self.player.y})")
+            self.add_to_log(f"DESCENDED to start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
+        self.update_camera()
+        
+        # Spawn enemies
+        self.enemy_manager.spawn_enemies_in_dungeon(
+            self.dungeon,
+            player_start_pos=self.dungeon.start_pos,
+            dungeon_level=self.dungeon_level
+        )
         
         self.add_to_log(f"Descended to dungeon level {self.dungeon_level}!", (255, 200, 100))
         self.add_to_log("The darkness grows deeper...", (100, 100, 200))
@@ -1283,6 +1367,11 @@ class Game:
         if self.state_manager.current_state != GameState.PLAYING:
             return
         
+        # Don't update game logic when paused
+        if self.is_paused:
+            print("DEBUG: Game is paused, skipping update")
+            return
+        
         # Update fog of war
         self._update_fog_of_war()
         
@@ -1312,8 +1401,8 @@ class Game:
             self.state_manager.render()
             return
         
-        # Clear screen
-        self.screen.fill((20, 20, 30))
+        # Clear screen - red on black theme
+        self.screen.fill((0, 0, 0))
         
         # Draw frame around gameplay area
         self._render_game_frame()
@@ -1338,6 +1427,21 @@ class Game:
         
         # Render UI
         self._render_ui()
+        
+        # Render XP bar
+        self._render_xp_bar()
+        
+        # Render skill popup
+        if self.skill_popup_open:
+            self._render_skill_popup()
+        
+        # Render log popup
+        if self.log_popup_open:
+            self._render_log_popup()
+        
+        # Render pause overlay
+        if self.is_paused:
+            self._render_pause_overlay()
     
     def _render_game_frame(self):
         """Render a frame around the gameplay area."""
@@ -1358,6 +1462,9 @@ class Game:
     
     def _render_town(self):
         """Render the town using sprites."""
+        # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
+        gameplay_height = self.screen.get_height() - 60
+        
         for y in range(self.town.height):
             for x in range(self.town.width):
                 # Only render if tile is visible or explored
@@ -1368,7 +1475,7 @@ class Game:
                 screen_y = (y - self.camera_y) * self.tile_height
                 
                 if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
-                    screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                    screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
                     
                     cell = self.town.get_cell(x, y)
                     # Always show walls if explored, even if not currently visible
@@ -1385,6 +1492,9 @@ class Game:
     
     def _render_dungeon(self):
         """Render the dungeon using sprites."""
+        # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
+        gameplay_height = self.screen.get_height() - 60
+        
         for y in range(self.dungeon.height):
             for x in range(self.dungeon.width):
                 # Only render if tile is visible or explored
@@ -1395,7 +1505,7 @@ class Game:
                 screen_y = (y - self.camera_y) * self.tile_height
                 
                 if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
-                    screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                    screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
                     
                     cell = self.dungeon.get_cell(x, y)
                     # Always show walls if explored, even if not currently visible
@@ -1417,7 +1527,7 @@ class Game:
         if sprite_name and self.sprite_manager.sprite_system.get_sprite(sprite_name):
             # Draw sprite without centering offsets for tighter layout
             # Dim the sprite if requested
-            tint_color = (0.5, 0.5, 0.5) if dimmed else None
+            tint_color = (0.5, 0.5, 0.5) if dimmed else self._get_dungeon_level_tint()
             self.sprite_manager.sprite_system.draw_sprite(
                 self.screen, sprite_name, screen_x, screen_y, 
                 scale=1, prevent_overlap=False, tint_color=tint_color
@@ -1444,13 +1554,13 @@ class Game:
         else:
             # Static sprites for other cell types
             base_sprites = {
-                CellType.DOOR: "window",
-                CellType.STAIRCASE: "stairs down",
-                CellType.CHEST: "prison gate",  # Use prison gate as chest
-                CellType.HP_PICKUP: "bubbles 1",  # Use bubbles as health pickup
-                CellType.TOWN_DOOR: "window",
-                CellType.DUNGEON_ENTRANCE: "stairs down",
-            }
+            CellType.DOOR: "window",
+                CellType.STAIRCASE: self._get_stair_sprite(x, y),
+            CellType.CHEST: "prison gate",  # Use prison gate as chest
+            CellType.HP_PICKUP: "bubbles 1",  # Use bubbles as health pickup
+            CellType.TOWN_DOOR: "window",
+            CellType.DUNGEON_ENTRANCE: "stairs down",
+        }
             sprite_name = base_sprites.get(cell)
         
         # Cache the sprite for consistency
@@ -1468,6 +1578,43 @@ class Game:
         """Get a random floor sprite."""
         floor_sprites = ["floor", "floor2"]
         return random.choice(floor_sprites)
+    
+    def _get_stair_sprite(self, x: int, y: int) -> str:
+        """Get the appropriate stair sprite based on position."""
+        if not self.dungeon:
+            return "stairs down"  # Default fallback
+        
+        # Check if this is the staircase going up (where player entered)
+        if (self.dungeon.staircase_up_pos and 
+            (x, y) == self.dungeon.staircase_up_pos):
+            return "stairs up"
+        
+        # Check if this is the staircase going down (to next level)
+        if (self.dungeon.staircase_pos and 
+            (x, y) == self.dungeon.staircase_pos):
+            return "stairs down"
+        
+        # Default to stairs down if we can't determine
+        return "stairs down"
+    
+    def _get_dungeon_level_tint(self) -> Optional[Tuple[float, float, float]]:
+        """Get tint color based on dungeon level."""
+        if self.current_area != GameArea.DUNGEON:
+            return None  # No tint for town
+        
+        # Brown-ish tint for level 1
+        if self.dungeon_level == 1:
+            return (1.0, 0.7, 0.5)  # Brown-ish tint (red boost, green/blue reduce)
+        elif self.dungeon_level == 2:
+            return (0.7, 0.7, 1.0)  # Blue-ish tint for level 2
+        elif self.dungeon_level == 3:
+            return (0.5, 1.0, 0.5)  # Green-ish tint for level 3
+        elif self.dungeon_level == 4:
+            return (1.0, 0.5, 1.0)  # Purple-ish tint for level 4
+        elif self.dungeon_level == 5:
+            return (0.3, 0.3, 0.3)  # Dark tint for deepest level
+        
+        return None  # No tint for other levels
     
     def _get_cell_color(self, cell: CellType) -> Tuple[int, int, int]:
         """Get color for a cell type (fallback when sprites not available)."""
@@ -1488,11 +1635,14 @@ class Game:
     
     def _render_player(self):
         """Render the player using sprites."""
+        # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
+        gameplay_height = self.screen.get_height() - 60
+        
         screen_x = (self.player.x - self.camera_x) * self.tile_size
         screen_y = (self.player.y - self.camera_y) * self.tile_height
         
         if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
-            screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+            screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
             
             # Try to use player sprite
             player_sprite = self._get_player_sprite()
@@ -1515,6 +1665,9 @@ class Game:
     
     def _render_enemies(self):
         """Render enemies using sprites."""
+        # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
+        gameplay_height = self.screen.get_height() - 60
+        
         for i, enemy in enumerate(self.enemy_manager.get_living_enemies()):
             enemy_id = f"enemy_{i}_{enemy.enemy_type.name}_{enemy.x}_{enemy.y}"
             # Render if enemy is visible or has a last known position
@@ -1531,7 +1684,7 @@ class Game:
             screen_y = (render_y - self.camera_y) * self.tile_height
             
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
-                screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
                 
                 # Try to use enemy sprite
                 enemy_sprite = self._get_enemy_sprite(enemy.enemy_type)
@@ -1569,17 +1722,20 @@ class Game:
     def _get_enemy_sprite(self, enemy_type: EnemyType) -> str:
         """Get enemy sprite based on enemy type."""
         enemy_sprites = {
-            EnemyType.CHICKEN: "undergrowth 3",
-            EnemyType.FROG: "lily pad 1",
-            EnemyType.SNAKE: "branch",
-            EnemyType.BIRD: "grass flowers",
-            EnemyType.SPIDER: "mushrooms",
-            EnemyType.GOBLIN: "tree dead"
+            EnemyType.CHICKEN: "bird",  # Use bird sprite for chicken
+            EnemyType.FROG: "frog",
+            EnemyType.SNAKE: "snake",
+            EnemyType.BIRD: "bird",
+            EnemyType.SPIDER: "spider",
+            EnemyType.GOBLIN: "goblin"
         }
-        return enemy_sprites.get(enemy_type, "tree dead")
+        return enemy_sprites.get(enemy_type, "slime")  # Use slime as fallback
     
     def _render_npcs(self):
         """Render NPCs in the town."""
+        # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
+        gameplay_height = self.screen.get_height() - 60
+        
         for npc in self.town.npcs:
             npc_id = f"npc_{npc.name}_{npc.x}_{npc.y}"
             # Render if NPC is visible or has a last known position
@@ -1596,7 +1752,7 @@ class Game:
             screen_y = (render_y - self.camera_y) * self.tile_height
             
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
-                screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
                 
                 # Try to use NPC sprite
                 npc_sprite = self._get_npc_sprite(npc.npc_type)
@@ -1618,12 +1774,15 @@ class Game:
     
     def _render_painted_sprites(self):
         """Render painted sprites in the town."""
+        # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
+        gameplay_height = self.screen.get_height() - 60
+        
         for (grid_x, grid_y), sprite_name in self.town.painted_sprites.items():
             screen_x = (grid_x - self.camera_x) * self.tile_size
             screen_y = (grid_y - self.camera_y) * self.tile_height
             
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
-                screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
                 
                 if self.sprite_manager.sprite_system.get_sprite(sprite_name):
                     # Draw painted sprite without centering offsets
@@ -1644,13 +1803,6 @@ class Game:
     
     def _render_ui(self):
         """Render the user interface."""
-        # Game log
-        y_offset = 10
-        for message, color in self.log_messages[-5:]:  # Show last 5 messages
-            text = self.small_font.render(message, True, color)
-            self.screen.blit(text, (10, y_offset))
-            y_offset += 20
-        
         # Player stats and health bar
         if self.player:
             char = self.player.character
@@ -1663,11 +1815,12 @@ class Game:
             
             # Health bar
             self._render_health_bar(char.current_hp, char.max_hp, 10, self.screen.get_height() - 40)
+            
+            # Mana bar
+            self._render_mana_bar(char.current_mana, char.max_mana, 220, self.screen.get_height() - 40)
         
-        # Controls
-        controls = "WASD: Move | F: Attack | Enter: Activate | C: Character | I: Inventory | O: Auto-explore | ESC: Quit"
-        text = self.small_font.render(controls, True, (200, 200, 200))
-        self.screen.blit(text, (10, self.screen.get_height() - 20))
+        # Game log in bottom bar
+        self._render_log_panel()
     
     def _render_health_bar(self, current_hp: int, max_hp: int, x: int, y: int):
         """Render a health bar."""
@@ -1692,6 +1845,113 @@ class Game:
         text_y = y + (bar_height - text.get_height()) // 2
         self.screen.blit(text, (text_x, text_y))
     
+    def _render_mana_bar(self, current_mana: int, max_mana: int, x: int, y: int):
+        """Render a mana bar."""
+        bar_width = 200
+        bar_height = 20
+        
+        # Background (dark blue)
+        pygame.draw.rect(self.screen, (0, 0, 100), (x, y, bar_width, bar_height))
+        
+        # Mana (blue)
+        mana_percentage = current_mana / max_mana if max_mana > 0 else 0
+        mana_width = int(bar_width * mana_percentage)
+        pygame.draw.rect(self.screen, (0, 150, 255), (x, y, mana_width, bar_height))
+        
+        # Border
+        pygame.draw.rect(self.screen, (255, 255, 255), (x, y, bar_width, bar_height), 2)
+        
+        # Text
+        mana_text = f"MP: {current_mana}/{max_mana}"
+        text = self.small_font.render(mana_text, True, (255, 255, 255))
+        text_x = x + (bar_width - text.get_width()) // 2
+        text_y = y + (bar_height - text.get_height()) // 2
+        self.screen.blit(text, (text_x, text_y))
+    
+    def _render_xp_bar(self):
+        """Render XP bar at the top of the bottom border, just below play area."""
+        if not self.player or not self.player.character:
+            return
+        
+        from system.perk_system import PerkSystem
+        perk_system = PerkSystem()
+        
+        # Calculate XP progress
+        current_level = self.player.character.level
+        current_exp = self.player.character.experience
+        current_level_exp = perk_system.calculate_experience_required(current_level)
+        next_level_exp = perk_system.calculate_experience_required(current_level + 1)
+        
+        # XP progress within current level
+        exp_in_level = current_exp - current_level_exp
+        exp_needed = next_level_exp - current_level_exp
+        
+        # Bar dimensions - span the full width, positioned at top of bottom border
+        bar_height = 12
+        # Position just below the play area (above the 60px bottom border)
+        bar_y = self.screen.get_height() - 60 - bar_height
+        
+        # Background (dark)
+        pygame.draw.rect(self.screen, (50, 50, 50), (0, bar_y, self.screen.get_width(), bar_height))
+        
+        # XP progress (white)
+        if exp_needed > 0:
+            xp_percentage = exp_in_level / exp_needed
+            xp_width = int(self.screen.get_width() * xp_percentage)
+            pygame.draw.rect(self.screen, (255, 255, 255), (0, bar_y, xp_width, bar_height))
+        
+        # Border
+        pygame.draw.rect(self.screen, (200, 200, 200), (0, bar_y, self.screen.get_width(), bar_height), 1)
+        
+        # XP text
+        xp_text = f"XP: {exp_in_level}/{exp_needed} (Level {current_level})"
+        text = self.small_font.render(xp_text, True, (255, 255, 255))
+        text_x = (self.screen.get_width() - text.get_width()) // 2
+        text_y = bar_y + (bar_height - text.get_height()) // 2
+        self.screen.blit(text, (text_x, text_y))
+    
+    def _render_log_panel(self):
+        """Render the game log panel in the bottom bar - right side extending to edge."""
+        if not self.log_messages:
+            return
+        
+        # Log panel dimensions - right third extending to the edge
+        panel_width = self.screen.get_width() // 3  # Right third of screen width
+        panel_height = 60  # Full height of bottom border
+        panel_x = self.screen.get_width() - panel_width  # Right side extending to edge
+        panel_y = self.screen.get_height() - 60
+        
+        # Dark background
+        pygame.draw.rect(self.screen, (30, 30, 30), (panel_x, panel_y, panel_width, panel_height))
+        pygame.draw.rect(self.screen, (100, 100, 100), (panel_x, panel_y, panel_width, panel_height), 1)
+        
+        # Show most recent messages at top, limit to 6 messages
+        total_messages = len(self.log_messages)
+        max_visible = 6  # Limit to 6 messages
+        start_index = max(0, total_messages - max_visible)
+        
+        # Render log messages (most recent first, with fading saturation)
+        y_offset = panel_y + 5
+        for i in range(total_messages - 1, start_index - 1, -1):  # Reverse order - newest first
+            if i >= 0 and i < len(self.log_messages):
+                message, original_color = self.log_messages[i]
+                
+                # Calculate saturation fade based on position (0 = most recent, 5 = oldest)
+                position = total_messages - 1 - i
+                saturation_factor = max(0.3, 1.0 - (position * 0.12))  # Fade from 100% to 30%
+                
+                # Apply saturation fade to color
+                faded_color = tuple(int(c * saturation_factor) for c in original_color)
+                
+                # Truncate long messages based on available width
+                max_chars = (panel_width - 10) // 8  # Approximate character width
+                if len(message) > max_chars:
+                    message = message[:max_chars-3] + "..."
+                
+                text = self.small_font.render(message, True, faded_color)
+                self.screen.blit(text, (panel_x + 5, y_offset))
+                y_offset += 10  # Slightly tighter spacing for 6 messages
+    
     def run(self):
         """Main game loop."""
         while self.running:
@@ -1712,9 +1972,10 @@ class Game:
         sys.exit()
     
     def _handle_mouse_click(self, pos):
-        """Handle mouse click for pathfinding."""
+        """Handle mouse click for pathfinding and log scrolling."""
         if not self.player or self.is_dead:
             return
+        
         
         # Convert screen coordinates to tile coordinates
         tile_x, tile_y = self._screen_to_tile_coords(pos[0], pos[1])
@@ -1746,6 +2007,17 @@ class Game:
         start = (self.player.x, self.player.y)
         target = (tile_x, tile_y)
         
+        # Check if target is walkable and explored
+        can_reach_exact_target = False
+        if self.current_area == GameArea.TOWN:
+            can_reach_exact_target = (self.town.can_move_to(tile_x, tile_y) and 
+                                    self._is_tile_explored(tile_x, tile_y))
+        else:
+            can_reach_exact_target = (self.dungeon.can_move_to(tile_x, tile_y) and 
+                                    self._is_tile_explored(tile_x, tile_y))
+        
+        print(f"DEBUG: Target ({tile_x}, {tile_y}) - Walkable: {can_reach_exact_target}")
+        
         if self.current_area == GameArea.TOWN:
             self.click_path = self._find_path_town(start, target)
         else:
@@ -1757,7 +2029,9 @@ class Game:
             self.click_target = None
         else:
             final_target = self.click_path[-1] if self.click_path else (tile_x, tile_y)
-            print(f"DEBUG: Path found to ({final_target[0]}, {final_target[1]}) with {len(self.click_path)} steps")
+            print(f"DEBUG: Clicked ({tile_x}, {tile_y}) -> Final target ({final_target[0]}, {final_target[1]}) with {len(self.click_path)} steps")
+            if (tile_x, tile_y) != (final_target[0], final_target[1]):
+                print(f"DEBUG: Target adjusted from ({tile_x}, {tile_y}) to ({final_target[0]}, {final_target[1]})")
             self.add_to_log(f"Pathing to ({final_target[0]}, {final_target[1]})", (100, 255, 100))
     
     def _screen_to_tile_coords(self, screen_x, screen_y):
@@ -1772,29 +2046,26 @@ class Game:
         
         return tile_x, tile_y
     
-    def _find_path_unified(self, start, target, is_town=True, allow_unexplored=False):
+    
+    def _find_path_unified(self, start, target, allow_unexplored=False, depth=0):
         """Unified A* pathfinding for all cases."""
-        if start == target:
+        if start == target or depth > 50:  # Prevent infinite recursion
             return []
         
         import heapq
         
         def heuristic(pos):
             """Distance heuristic."""
-            if is_town:
-                return abs(pos[0] - target[0]) + abs(pos[1] - target[1])  # Manhattan
-            else:
-                dx = abs(pos[0] - target[0])
-                dy = abs(pos[1] - target[1])
-                return (dx * dx + dy * dy) ** 0.5  # Euclidean
+            # Always use Euclidean distance (treat town as dungeon)
+            dx = abs(pos[0] - target[0])
+            dy = abs(pos[1] - target[1])
+            return (dx * dx + dy * dy) ** 0.5
         
         def get_neighbors(pos):
             """Get valid neighboring positions."""
             x, y = pos
-            if is_town:
-                directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]  # 4-directional
-            else:
-                directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]  # 8-directional
+            # Always use 8-directional movement (treat town as dungeon)
+            directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
             
             neighbors = []
             
@@ -1802,33 +2073,44 @@ class Game:
                 new_x, new_y = x + dx, y + dy
                 new_pos = (new_x, new_y)
                 
-                # Check bounds and walkability
-                if is_town:
+                # Check bounds and walkability (treat town as dungeon)
+                # Determine which area we're in
+                if self.current_area == GameArea.TOWN:
+                    # For town, use dungeon-style pathfinding
                     if (0 <= new_x < self.town.width and 
-                        0 <= new_y < self.town.height and
-                        self.town.can_move_to(new_x, new_y)):
-                        # Check fog of war only if not allowing unexplored
-                        if allow_unexplored or self._is_tile_explored(new_x, new_y):
-                            neighbors.append(new_pos)
+                        0 <= new_y < self.town.height):
+                        # Check if tile is walkable (regardless of exploration when allow_unexplored=True)
+                        cell = self.town.get_cell(new_x, new_y)
+                        is_walkable = cell in [CellType.TOWN_FLOOR, CellType.TOWN_DOOR]
+                        
+                        if is_walkable:
+                            # Always allow movement when allow_unexplored is True
+                            if allow_unexplored:
+                                neighbors.append(new_pos)
+                            elif self._is_tile_explored(new_x, new_y):
+                                neighbors.append(new_pos)
                 else:
                     if (0 <= new_x < self.dungeon.width and 
-                        0 <= new_y < self.dungeon.height and
-                        self.dungeon.can_move_to(new_x, new_y)):
-                        # Check fog of war only if not allowing unexplored
-                        if allow_unexplored or self._is_tile_explored(new_x, new_y):
-                            neighbors.append(new_pos)
+                        0 <= new_y < self.dungeon.height):
+                        # Check if tile is walkable (regardless of exploration when allow_unexplored=True)
+                        cell = self.dungeon.get_cell(new_x, new_y)
+                        is_walkable = cell in [CellType.FLOOR, CellType.DOOR]
+                        
+                        if is_walkable:
+                            # Always allow movement when allow_unexplored is True
+                            if allow_unexplored:
+                                neighbors.append(new_pos)
+                            elif self._is_tile_explored(new_x, new_y):
+                                neighbors.append(new_pos)
             
             return neighbors
         
         def get_move_cost(current, neighbor):
             """Get cost of moving from current to neighbor."""
-            if is_town:
-                return 1.0  # All moves cost 1 in town
-            else:
-                # Diagonal moves cost more in dungeon
-                dx = abs(neighbor[0] - current[0])
-                dy = abs(neighbor[1] - current[1])
-                return 1.4 if dx == 1 and dy == 1 else 1.0
+            # Always use dungeon-style movement costs (treat town as dungeon)
+            dx = abs(neighbor[0] - current[0])
+            dy = abs(neighbor[1] - current[1])
+            return 1.4 if dx == 1 and dy == 1 else 1.0
         
         # A* algorithm
         open_set = [(0, start)]  # Priority queue: (f_score, position)
@@ -1869,81 +2151,64 @@ class Game:
         
         # If we can't reach the exact target, try to find the closest reachable tile
         if not allow_unexplored:
-            return self._find_closest_reachable_tile(start, target, is_town)
+            return self._find_closest_reachable_tile(start, target, depth=depth + 1)
         
         return []
     
-    def _find_closest_reachable_tile(self, start, target, is_town):
-        """Find the closest reachable tile to the target."""
-        import heapq
+    def _find_closest_reachable_tile(self, start, target, depth=0):
+        """Find the closest reachable tile to the target using expanding radius search."""
+        # Prevent infinite recursion
+        if depth > 2:
+            return []
+        target_x, target_y = target
         
-        def heuristic(pos):
-            """Distance to target."""
-            return abs(pos[0] - target[0]) + abs(pos[1] - target[1])
-        
-        def get_neighbors(pos):
-            """Get valid neighboring positions."""
-            x, y = pos
-            if is_town:
-                directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
-            else:
-                directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+        # Search in expanding radius around target
+        for radius in range(1, 4):  # Search up to 3 tiles away
+            candidates = []
             
-            neighbors = []
+            # Check all tiles within radius
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    # Skip if outside radius
+                    if abs(dx) + abs(dy) > radius:
+                        continue
+                    
+                    check_x = target_x + dx
+                    check_y = target_y + dy
+                    
+                    # Check bounds (treat town as dungeon)
+                    if self.current_area == GameArea.TOWN:
+                        if not (0 <= check_x < self.town.width and 0 <= check_y < self.town.height):
+                            continue
+                        can_move = (self.town.can_move_to(check_x, check_y) and 
+                                  self._is_tile_explored(check_x, check_y))
+                    else:
+                        if not (0 <= check_x < self.dungeon.width and 0 <= check_y < self.dungeon.height):
+                            continue
+                        can_move = (self.dungeon.can_move_to(check_x, check_y) and 
+                                  self._is_tile_explored(check_x, check_y))
+                    
+                    if can_move:
+                        # Calculate distance to original target
+                        distance = abs(check_x - target_x) + abs(check_y - target_y)
+                        candidates.append(((check_x, check_y), distance))
             
-            for dx, dy in directions:
-                new_x, new_y = x + dx, y + dy
-                new_pos = (new_x, new_y)
+            # If we found candidates at this radius, pick the closest one
+            if candidates:
+                # Sort by distance to original target
+                candidates.sort(key=lambda x: x[1])
+                best_tile = candidates[0][0]
                 
-                if is_town:
-                    if (0 <= new_x < self.town.width and 
-                        0 <= new_y < self.town.height and
-                        self.town.can_move_to(new_x, new_y) and
-                        self._is_tile_explored(new_x, new_y)):
-                        neighbors.append(new_pos)
-                else:
-                    if (0 <= new_x < self.dungeon.width and 
-                        0 <= new_y < self.dungeon.height and
-                        self.dungeon.can_move_to(new_x, new_y) and
-                        self._is_tile_explored(new_x, new_y)):
-                        neighbors.append(new_pos)
-            
-            return neighbors
-        
-        # BFS to find closest reachable tile
-        queue = [(0, start)]  # (distance, position)
-        visited = {start}
-        best_tile = None
-        best_distance = float('inf')
-        
-        while queue:
-            distance, current = heapq.heappop(queue)
-            
-            if current in visited and current != start:
-                continue
-                
-            visited.add(current)
-            
-            # Check if this is closer to target
-            target_distance = abs(current[0] - target[0]) + abs(current[1] - target[1])
-            if target_distance < best_distance:
-                best_distance = target_distance
-                best_tile = current
-            
-            # Add neighbors
-            for neighbor in get_neighbors(current):
-                if neighbor not in visited:
-                    heapq.heappush(queue, (distance + 1, neighbor))
-        
-        # If we found a better tile, path to it
-        if best_tile and best_tile != start:
-            return self._find_path_unified(start, best_tile, is_town, allow_unexplored=False)
+                # Try to path to this tile (with depth limit to prevent recursion)
+                path = self._find_path_unified(start, best_tile, allow_unexplored=False, depth=depth + 1)
+                if path:
+                    return path
         
         return []
     
     def _find_path_town(self, start, target):
         """Find path in town using unified pathfinding."""
-        return self._find_path_unified(start, target, is_town=True, allow_unexplored=False)
+        return self._find_path_unified(start, target, allow_unexplored=False, depth=0)
     
     
     def _get_enemy_at_position(self, x: int, y: int):
@@ -1988,6 +2253,12 @@ class Game:
                 # Display level up messages
                 for message in level_up_messages:
                     self.add_to_log(message, (255, 255, 0))
+                
+                # Show skill point notification if available
+                if hasattr(self.player.character, 'attribute_points') and self.player.character.attribute_points > 0:
+                    self.add_to_log(f"Press S to allocate {self.player.character.attribute_points} attribute points!", (100, 255, 100))
+                if hasattr(self.player.character, 'skill_points') and self.player.character.skill_points > 0:
+                    self.add_to_log(f"Press S to allocate {self.player.character.skill_points} skill points!", (100, 255, 100))
         else:
             # Enemy counter-attacks
             self._enemy_attack_player(enemy)
@@ -2112,6 +2383,9 @@ class Game:
         # Clear level data
         self._clear_level_data()
         
+        # Clear custom town data to force regeneration
+        self.custom_town_data = None
+        
         # Reset player
         self.player = None
         
@@ -2124,6 +2398,141 @@ class Game:
         self.state_manager.current_state = GameState.CLASS_SELECTION
         
         self.add_to_log("Starting new game...", (100, 255, 100))
+    
+    def _toggle_pause(self):
+        """Toggle pause state."""
+        if self.is_dead:
+            return  # Can't pause when dead
+        
+        self.is_paused = not self.is_paused
+        print(f"DEBUG: Pause toggled - is_paused: {self.is_paused}")
+        if self.is_paused:
+            self.add_to_log("Game paused - press SPACE to resume", (255, 255, 100))
+        else:
+            self.add_to_log("Game resumed", (100, 255, 100))
+    
+    def _toggle_skill_popup(self):
+        """Toggle skill point allocation popup."""
+        if not self.player or not self.player.character:
+            return
+        
+        # Check if player has points to allocate
+        has_attribute_points = hasattr(self.player.character, 'attribute_points') and self.player.character.attribute_points > 0
+        has_skill_points = hasattr(self.player.character, 'skill_points') and self.player.character.skill_points > 0
+        
+        if not has_attribute_points and not has_skill_points:
+            self.add_to_log("No points to allocate!", (255, 100, 100))
+            return
+        
+        self.skill_popup_open = not self.skill_popup_open
+        if self.skill_popup_open:
+            self.add_to_log("Skill allocation opened - press S to close", (100, 255, 100))
+        else:
+            self.add_to_log("Skill allocation closed", (100, 255, 100))
+    
+    def _toggle_log_popup(self):
+        """Toggle log popup window."""
+        self.log_popup_open = not self.log_popup_open
+        if self.log_popup_open:
+            self.log_popup_scroll = 0  # Reset scroll to top
+            self.add_to_log("Log popup opened - press L to close", (100, 255, 100))
+        else:
+            self.add_to_log("Log popup closed", (100, 255, 100))
+    
+    def _handle_skill_popup_input(self, key):
+        """Handle input for skill popup."""
+        if not self.player or not self.player.character:
+            return
+        
+        char = self.player.character
+        from system.character_system import StatType
+        
+        # Close popup
+        if key == pygame.K_s:
+            self.skill_popup_open = False
+            self.selected_stat = None
+            self.add_to_log("Skill allocation closed", (100, 255, 100))
+            return
+        
+        # Select attribute (1-5)
+        if key == pygame.K_1:
+            self.selected_stat = 0  # STRENGTH
+        elif key == pygame.K_2:
+            self.selected_stat = 1  # DEXTERITY
+        elif key == pygame.K_3:
+            self.selected_stat = 2  # CONSTITUTION
+        elif key == pygame.K_4:
+            self.selected_stat = 3  # PERCEPTION
+        elif key == pygame.K_5:
+            self.selected_stat = 4  # MANA
+        
+        # Allocate/deallocate points
+        if key == pygame.K_PLUS or key == pygame.K_KP_PLUS:
+            self._allocate_attribute_point(1)
+        elif key == pygame.K_MINUS or key == pygame.K_KP_MINUS:
+            self._allocate_attribute_point(-1)
+    
+    def _allocate_attribute_point(self, amount):
+        """Allocate or deallocate attribute points."""
+        if not self.player or not self.player.character:
+            return
+        
+        char = self.player.character
+        from system.character_system import StatType
+        
+        if self.selected_stat is None:
+            self.add_to_log("Select an attribute first (1-5)", (255, 100, 100))
+            return
+        
+        if not hasattr(char, 'attribute_points') or char.attribute_points <= 0:
+            self.add_to_log("No attribute points available!", (255, 100, 100))
+            return
+        
+        # Map selected stat to StatType
+        attributes = [StatType.STRENGTH, StatType.DEXTERITY, StatType.CONSTITUTION, StatType.PERCEPTION, StatType.MANA]
+        if self.selected_stat >= len(attributes):
+            return
+        
+        stat = attributes[self.selected_stat]
+        
+        if amount > 0:  # Allocating points
+            if char.attribute_points >= amount:
+                char.stats.increase_base_stat(stat, amount)
+                char.attribute_points -= amount
+                char._update_equipment_bonuses()  # Update HP/mana
+                self.add_to_log(f"Allocated {amount} point(s) to {stat.value}", (100, 255, 100))
+            else:
+                self.add_to_log("Not enough attribute points!", (255, 100, 100))
+        else:  # Deallocating points
+            current_base = char.stats.base_stats[stat]
+            if current_base > 8:  # Minimum base stat is 8
+                deallocate_amount = min(abs(amount), current_base - 8)
+                char.stats.base_stats[stat] -= deallocate_amount
+                char.attribute_points += deallocate_amount
+                char._update_equipment_bonuses()  # Update HP/mana
+                self.add_to_log(f"Deallocated {deallocate_amount} point(s) from {stat.value}", (100, 255, 100))
+            else:
+                self.add_to_log(f"Cannot reduce {stat.value} below 8!", (255, 100, 100))
+    
+    def _handle_log_popup_input(self, key):
+        """Handle input for log popup."""
+        # Close popup
+        if key == pygame.K_l:
+            self.log_popup_open = False
+            self.add_to_log("Log popup closed", (100, 255, 100))
+            return
+        
+        # Scroll up
+        if key == pygame.K_UP:
+            if self.log_popup_scroll > 0:
+                self.log_popup_scroll -= 1
+        # Scroll down
+        elif key == pygame.K_DOWN:
+            total_messages = len(self.log_messages)
+            lines_per_page = 340 // 15  # Approximate lines that fit
+            max_scroll = max(0, total_messages - lines_per_page)
+            if self.log_popup_scroll < max_scroll:
+                self.log_popup_scroll += 1
     
     def _toggle_auto_explore(self):
         """Toggle auto-explore mode."""
@@ -2139,15 +2548,103 @@ class Game:
             self.auto_explore_active = False
             self.auto_explore_path = []
             self.auto_explore_target = None
+            self.auto_explore_failed_attempts = 0
             self.add_to_log("Auto-explore disabled", (255, 255, 255))
         else:
             self.auto_explore_active = True
+            self.auto_explore_failed_attempts = 0
             self._find_next_exploration_target()
             if self.auto_explore_target:
                 self.add_to_log("Auto-explore enabled", (100, 150, 255))
             else:
                 self.add_to_log("Auto-explore complete: all areas explored!", (100, 255, 100))
                 self.auto_explore_active = False
+    
+    def _toggle_auto_explore_attack(self):
+        """Toggle auto-explore mode with attack capability."""
+        if not self.player:
+            return
+        
+        # Check if enemies are visible
+        if self._are_enemies_visible():
+            # In attack mode, check if we can attack adjacent enemies
+            closest_enemy = self._get_closest_enemy()
+            if closest_enemy:
+                # Only attack if adjacent (no ranged attacks)
+                distance = abs(closest_enemy.x - self.player.x) + abs(closest_enemy.y - self.player.y)
+                if distance == 1:
+                    self.add_to_log(f"Attacking adjacent enemy: {closest_enemy.enemy_type.value}!", (255, 100, 100))
+                    self._attack_enemy(closest_enemy)
+                    return
+                else:
+                    # Enemy not adjacent, enable attack mode to move towards enemies
+                    self.add_to_log(f"Enemy detected: {closest_enemy.enemy_type.value} - moving to attack!", (255, 100, 100))
+                    # Enable attack mode to move towards the enemy
+                    self.auto_explore_attack_mode = True
+                    self.auto_explore_active = True
+                    return
+            else:
+                self.add_to_log("No enemies to attack!", (255, 255, 100))
+                return
+        
+        if self.auto_explore_active and self.auto_explore_attack_mode:
+            # Disable attack mode
+            self.auto_explore_attack_mode = False
+            self.auto_explore_active = False
+            self.auto_explore_path = []
+            self.auto_explore_target = None
+            self.add_to_log("Auto-explore attack mode disabled", (255, 255, 255))
+        else:
+            # Enable attack mode
+            self.auto_explore_attack_mode = True
+            self.auto_explore_active = True
+            self._find_next_exploration_target()
+            if self.auto_explore_target:
+                self.add_to_log("Auto-explore attack mode enabled", (255, 100, 100))
+            else:
+                self.add_to_log("Auto-explore complete: all areas explored!", (100, 255, 100))
+                self.auto_explore_active = False
+                self.auto_explore_attack_mode = False
+    
+    def _get_closest_enemy(self):
+        """Get the closest visible enemy to the player."""
+        if not self.player or self.current_area != GameArea.DUNGEON:
+            return None
+        
+        closest_enemy = None
+        closest_distance = float('inf')
+        
+        for enemy in self.enemy_manager.enemies:
+            if enemy.is_alive and (enemy.x, enemy.y) in self.visible_tiles:
+                distance = abs(enemy.x - self.player.x) + abs(enemy.y - self.player.y)
+                if distance < closest_distance:
+                    closest_distance = distance
+                    closest_enemy = enemy
+        
+        return closest_enemy
+    
+    def _move_towards_enemy(self, enemy):
+        """Move towards a specific enemy."""
+        if not self.player or not enemy:
+            return
+        
+        # Calculate direction to enemy
+        dx = 0
+        dy = 0
+        
+        if enemy.x > self.player.x:
+            dx = 1
+        elif enemy.x < self.player.x:
+            dx = -1
+        
+        if enemy.y > self.player.y:
+            dy = 1
+        elif enemy.y < self.player.y:
+            dy = -1
+        
+        # Try to move towards enemy
+        current_time = pygame.time.get_ticks() / 1000.0
+        self._try_move_player(dx, dy, current_time)
     
     def _are_enemies_visible(self):
         """Check if any enemies are visible to the player."""
@@ -2166,66 +2663,226 @@ class Game:
         return False
     
     def _find_next_exploration_target(self):
-        """Find the nearest unexplored area to target."""
+        """Smart A* exploration strategy for large levels."""
         if not self.player:
             return
         
         player_x, player_y = self.player.x, self.player.y
-        unexplored_tiles = []
         
-        # Find all unexplored floor tiles
+        # Get the current area
         if self.current_area == GameArea.TOWN:
-            for y in range(self.town.height):
-                for x in range(self.town.width):
-                    cell = self.town.get_cell(x, y)
-                    if (cell in [CellType.TOWN_FLOOR, CellType.TOWN_DOOR] and 
-                        (x, y) not in self.explored_tiles):
-                        unexplored_tiles.append((x, y))
+            width, height = self.town.width, self.town.height
+            get_cell = self.town.get_cell
         else:
-            for y in range(self.dungeon.height):
-                for x in range(self.dungeon.width):
-                    cell = self.dungeon.get_cell(x, y)
-                    if (cell in [CellType.FLOOR, CellType.DOOR] and 
-                        (x, y) not in self.explored_tiles):
-                        unexplored_tiles.append((x, y))
+            width, height = self.dungeon.width, self.dungeon.height
+            get_cell = self.dungeon.get_cell
         
-        if not unexplored_tiles:
+        # Count total unexplored tiles
+        total_unexplored = 0
+        for y in range(height):
+            for x in range(width):
+                if (x, y) not in self.explored_tiles:
+                    total_unexplored += 1
+        
+        print(f"DEBUG: Total unexplored tiles: {total_unexplored}")
+        
+        # If all tiles explored, we're done
+        if total_unexplored == 0:
             self.auto_explore_target = None
             return
         
-        # Find the closest unexplored tile
-        closest_distance = float('inf')
+        # Strategy 1: Try to explore nearby tiles first (within walking distance)
+        nearby_target = self._find_nearby_exploration_target(player_x, player_y, width, height, get_cell)
+        if nearby_target:
+            print(f"DEBUG: Found nearby target: {nearby_target}")
+            self.auto_explore_target = nearby_target
+            return
+        
+        # Strategy 2: Use A* to find the closest reachable unexplored area
+        print("DEBUG: No nearby targets, using A* to find closest reachable unexplored area")
+        self.auto_explore_target = self._find_closest_reachable_unexplored_area(player_x, player_y, width, height, get_cell)
+    
+    def _find_nearby_exploration_target(self, player_x, player_y, width, height, get_cell):
+        """Find unexplored tiles within walking distance (radius 3)."""
+        for radius in range(1, 4):  # Check radius 1-3
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    if abs(dx) != radius and abs(dy) != radius:
+                        continue
+                    
+                    check_x, check_y = player_x + dx, player_y + dy
+                    
+                    # Check bounds
+                    if 0 <= check_x < width and 0 <= check_y < height:
+                        if (check_x, check_y) not in self.explored_tiles:
+                            cell = get_cell(check_x, check_y)
+                            
+                            # For any unexplored tile, find a walkable tile we can reach to see it
+                            if cell in [CellType.FLOOR, CellType.DOOR, CellType.TOWN_FLOOR, CellType.TOWN_DOOR]:
+                                # Direct walkable tile - path to it
+                                test_path = self._find_path_unified((player_x, player_y), (check_x, check_y), allow_unexplored=True, depth=0)
+                                if test_path:
+                                    return (check_x, check_y)
+                            else:
+                                # Wall or other tile - find adjacent walkable tile to see it from
+                                has_adjacent_walkable = False
+                                for adj_dx, adj_dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                                    adj_x, adj_y = check_x + adj_dx, check_y + adj_dy
+                                    if (0 <= adj_x < width and 0 <= adj_y < height):
+                                        adj_cell = get_cell(adj_x, adj_y)
+                                        if adj_cell in [CellType.FLOOR, CellType.DOOR, CellType.TOWN_FLOOR, CellType.TOWN_DOOR]:
+                                            # Test if we can reach this adjacent walkable tile
+                                            test_path = self._find_path_unified((player_x, player_y), (adj_x, adj_y), allow_unexplored=True, depth=0)
+                                            if test_path:
+                                                return (check_x, check_y)  # Target the unexplored tile, path to adjacent walkable
+                                            has_adjacent_walkable = True
+                                
+                                # Skip isolated walls that have no adjacent walkable tiles
+                                if not has_adjacent_walkable:
+                                    continue
+        return None
+    
+    def _find_closest_reachable_unexplored_area(self, player_x, player_y, width, height, get_cell):
+        """Find closest reachable unexplored area using straight-line distance + A*."""
+        # Find all unexplored tiles with straight-line distances
+        unexplored_candidates = []
+        for y in range(height):
+            for x in range(width):
+                if (x, y) not in self.explored_tiles:
+                    cell = get_cell(x, y)
+                    
+                    # Skip isolated walls that have no adjacent walkable tiles
+                    if cell in [CellType.WALL, CellType.TOWN_WALL]:
+                        has_adjacent_walkable = False
+                        for adj_dx, adj_dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            adj_x, adj_y = x + adj_dx, y + adj_dy
+                            if (0 <= adj_x < width and 0 <= adj_y < height):
+                                adj_cell = get_cell(adj_x, adj_y)
+                                if adj_cell in [CellType.FLOOR, CellType.DOOR, CellType.TOWN_FLOOR, CellType.TOWN_DOOR]:
+                                    has_adjacent_walkable = True
+                                    break
+                        if not has_adjacent_walkable:
+                            continue  # Skip this isolated wall
+                    
+                    # Calculate straight-line distance
+                    straight_distance = math.sqrt((x - player_x)**2 + (y - player_y)**2)
+                    unexplored_candidates.append(((x, y), straight_distance))
+        
+        if not unexplored_candidates:
+            return None
+        
+        # Sort by straight-line distance (fastest first)
+        unexplored_candidates.sort(key=lambda x: x[1])
+        
+        # Test A* pathfinding for the closest candidates only
+        max_candidates_to_test = min(10, len(unexplored_candidates))  # Test up to 10 closest
+        
+        closest_path_distance = float('inf')
         closest_tile = None
         
-        for tile_x, tile_y in unexplored_tiles:
-            distance = abs(tile_x - player_x) + abs(tile_y - player_y)  # Manhattan distance
-            if distance < closest_distance:
-                closest_distance = distance
-                closest_tile = (tile_x, tile_y)
+        for i, (target, straight_distance) in enumerate(unexplored_candidates[:max_candidates_to_test]):
+            target_x, target_y = target
+            cell = get_cell(target_x, target_y)
+            print(f"DEBUG: Testing candidate {i+1}: {target} (cell: {cell}, straight distance: {straight_distance:.1f})")
+            
+            # For any unexplored tile, find a walkable position we can reach to see it
+            if cell in [CellType.FLOOR, CellType.DOOR, CellType.TOWN_FLOOR, CellType.TOWN_DOOR]:
+                # Direct walkable tile - path to it
+                path = self._find_path_unified((player_x, player_y), target, allow_unexplored=True, depth=0)
+                if path:
+                    path_distance = len(path)
+                    print(f"DEBUG: Found direct path to {target} with {path_distance} steps")
+                    if path_distance < closest_path_distance:
+                        closest_path_distance = path_distance
+                        closest_tile = target
+                else:
+                    print(f"DEBUG: No direct path to walkable {target}")
+            else:
+                # Wall or other tile - find adjacent walkable tile to see it from
+                print(f"DEBUG: {target} is {cell}, looking for adjacent walkable tile")
+                found_adjacent = False
+                for adj_dx, adj_dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    adj_x, adj_y = target_x + adj_dx, target_y + adj_dy
+                    if (0 <= adj_x < width and 0 <= adj_y < height):
+                        adj_cell = get_cell(adj_x, adj_y)
+                        if adj_cell in [CellType.FLOOR, CellType.DOOR, CellType.TOWN_FLOOR, CellType.TOWN_DOOR]:
+                            print(f"DEBUG: Found adjacent walkable tile at ({adj_x}, {adj_y})")
+                            # Test if we can reach this adjacent walkable tile
+                            path = self._find_path_unified((player_x, player_y), (adj_x, adj_y), allow_unexplored=True, depth=0)
+                            if path:
+                                path_distance = len(path)
+                                print(f"DEBUG: Found path to adjacent tile ({adj_x}, {adj_y}) with {path_distance} steps")
+                                if path_distance < closest_path_distance:
+                                    closest_path_distance = path_distance
+                                    closest_tile = target  # Target the unexplored tile, path to adjacent walkable
+                                found_adjacent = True
+                                break  # Found one adjacent tile, no need to check others
+                            else:
+                                print(f"DEBUG: No path to adjacent tile ({adj_x}, {adj_y})")
+                if not found_adjacent:
+                    print(f"DEBUG: No adjacent walkable tile found for {target}")
         
-        self.auto_explore_target = closest_tile
-        self._calculate_auto_explore_path()
+        print(f"DEBUG: Closest reachable unexplored area: {closest_tile} (path distance: {closest_path_distance})")
+        return closest_tile
     
     def _calculate_auto_explore_path(self):
         """Calculate path to the auto-explore target using unified pathfinding."""
         if not self.auto_explore_target or not self.player:
             self.auto_explore_path = []
+            if not self.auto_explore_target:
+                self.add_to_log("Auto-explore complete: all areas explored!", (100, 255, 100))
+                self.auto_explore_active = False
             return
         
         start = (self.player.x, self.player.y)
         target = self.auto_explore_target
         
-        # Use unified pathfinding that can reach unexplored areas
-        is_town = (self.current_area == GameArea.TOWN)
-        self.auto_explore_path = self._find_path_unified(start, target, is_town=is_town, allow_unexplored=True)
+        # Check if target is walkable - if not, find adjacent walkable tile to path to
+        target_x, target_y = target
+        if self.current_area == GameArea.TOWN:
+            cell = self.town.get_cell(target_x, target_y)
+        else:
+            cell = self.dungeon.get_cell(target_x, target_y)
+        
+        print(f"DEBUG: Calculating path from {start} to target {target} (cell: {cell})")
+        
+        if cell in [CellType.FLOOR, CellType.DOOR, CellType.TOWN_FLOOR, CellType.TOWN_DOOR]:
+            # Target is walkable, path directly to it
+            print(f"DEBUG: Target is walkable, pathing directly to {target}")
+            self.auto_explore_path = self._find_path_unified(start, target, allow_unexplored=True, depth=0)
+        else:
+            # Target is not walkable (wall, etc.) - find adjacent walkable tile to see it from
+            print(f"DEBUG: Target is not walkable, looking for adjacent walkable tile")
+            for adj_dx, adj_dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                adj_x, adj_y = target_x + adj_dx, target_y + adj_dy
+                if self.current_area == GameArea.TOWN:
+                    if (0 <= adj_x < self.town.width and 0 <= adj_y < self.town.height):
+                        adj_cell = self.town.get_cell(adj_x, adj_y)
+                        if adj_cell in [CellType.TOWN_FLOOR, CellType.TOWN_DOOR]:
+                            # Path to the adjacent walkable tile
+                            print(f"DEBUG: Found adjacent walkable tile at ({adj_x}, {adj_y}), pathing to it")
+                            self.auto_explore_path = self._find_path_unified(start, (adj_x, adj_y), allow_unexplored=True, depth=0)
+                            break
+                else:
+                    if (0 <= adj_x < self.dungeon.width and 0 <= adj_y < self.dungeon.height):
+                        adj_cell = self.dungeon.get_cell(adj_x, adj_y)
+                        if adj_cell in [CellType.FLOOR, CellType.DOOR]:
+                            # Path to the adjacent walkable tile
+                            print(f"DEBUG: Found adjacent walkable tile at ({adj_x}, {adj_y}), pathing to it")
+                            self.auto_explore_path = self._find_path_unified(start, (adj_x, adj_y), allow_unexplored=True, depth=0)
+                            break
+        
+        print(f"DEBUG: Calculated path: {len(self.auto_explore_path) if self.auto_explore_path else 0} steps")
         
         if not self.auto_explore_path:
             self.add_to_log("Auto-explore stopped: cannot reach target", (255, 255, 100))
             self.auto_explore_active = False
     
     def _find_path(self, start, target):
-        """Find path in dungeon using unified pathfinding."""
-        return self._find_path_unified(start, target, is_town=False, allow_unexplored=False)
+        """Find path using unified pathfinding."""
+        return self._find_path_unified(start, target, allow_unexplored=False, depth=0)
+    
+    
     
     
     def _update_auto_explore(self):
@@ -2235,13 +2892,30 @@ class Game:
         
         current_time = pygame.time.get_ticks() / 1000.0
         
-        # Check if enemies are visible
-        if self._are_enemies_visible():
+        # Check if enemies are visible (only for normal auto-explore, not attack mode)
+        if self._are_enemies_visible() and not self.auto_explore_attack_mode:
+            # Normal auto-explore stops when enemies are visible
             self.add_to_log("Auto-explore stopped: enemy detected!", (255, 100, 100))
             self.auto_explore_active = False
             self.auto_explore_path = []
             self.auto_explore_target = None
             return
+        
+        # In attack mode, check for enemies to attack
+        if self.auto_explore_attack_mode and self._are_enemies_visible():
+            closest_enemy = self._get_closest_enemy()
+            if closest_enemy:
+                # Check if we can attack (adjacent only - no ranged attacks)
+                distance = abs(closest_enemy.x - self.player.x) + abs(closest_enemy.y - self.player.y)
+                if distance == 1:
+                    # Attack the enemy
+                    self.add_to_log(f"Auto-attacking {closest_enemy.enemy_type.value}!", (255, 100, 100))
+                    self._attack_enemy(closest_enemy)
+                    return
+                else:
+                    # Move towards the enemy
+                    self._move_towards_enemy(closest_enemy)
+                    return
         
         # Check if we have a path
         if not self.auto_explore_path:
@@ -2249,7 +2923,23 @@ class Game:
             if not self.auto_explore_target:
                 self.add_to_log("Auto-explore complete: all areas explored!", (100, 255, 100))
                 self.auto_explore_active = False
-            return
+                self.auto_explore_failed_attempts = 0
+                return
+            
+            # Generate path to target using proper path calculation
+            self._calculate_auto_explore_path()
+            
+            if not self.auto_explore_path:
+                # No path found, skip this target
+                self.auto_explore_failed_attempts += 1
+                self.auto_explore_target = None
+                
+                # Safety check: if we've failed too many times, stop auto-explore
+                if self.auto_explore_failed_attempts >= 10:
+                    self.add_to_log("Auto-explore stopped: too many failed attempts", (255, 100, 100))
+                    self.auto_explore_active = False
+                    self.auto_explore_failed_attempts = 0
+                return
         
         # Move to next position in path
         if self.player.can_move(current_time):
@@ -2260,6 +2950,9 @@ class Game:
             # Move player
             self.player.move_to(next_pos[0], next_pos[1], current_time)
             self.update_camera()
+            
+            # Reset failed attempts counter on successful movement
+            self.auto_explore_failed_attempts = 0
             
             # Remove the position we just moved to
             self.auto_explore_path.pop(0)
@@ -2331,6 +3024,9 @@ class Game:
         if not self.click_navigation_active or not self.click_path:
             return
         
+        # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
+        gameplay_height = self.screen.get_height() - 60
+        
         # Render path as a series of connected dots
         for i, (x, y) in enumerate(self.click_path):
             screen_x = (x - self.camera_x) * self.tile_size
@@ -2338,7 +3034,7 @@ class Game:
             
             # Check if the tile is on screen
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
-                screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
                 
                 # Calculate center of tile
                 center_x = screen_x + self.tile_size // 2
@@ -2355,22 +3051,185 @@ class Game:
                     # Middle of path - blue circle
                     pygame.draw.circle(self.screen, (0, 100, 255), (center_x, center_y), 3)
                 
-                # Draw line to next point
-                if i < len(self.click_path) - 1:
-                    next_x, next_y = self.click_path[i + 1]
-                    next_screen_x = (next_x - self.camera_x) * self.tile_size
-                    next_screen_y = (next_y - self.camera_y) * self.tile_height
-                    next_center_x = next_screen_x + self.tile_size // 2
-                    next_center_y = next_screen_y + self.tile_height // 2
-                    
-                    # Only draw line if both points are on screen
-                    if (next_screen_x >= -self.tile_size and next_screen_x < self.screen.get_width() + self.tile_size and
-                        next_screen_y >= -self.tile_height and next_screen_y < self.screen.get_height() + self.tile_height):
-                        pygame.draw.line(self.screen, (0, 150, 255), (center_x, center_y), (next_center_x, next_center_y), 2)
+        # Draw line to next point
+        if i < len(self.click_path) - 1:
+            next_x, next_y = self.click_path[i + 1]
+            next_screen_x = (next_x - self.camera_x) * self.tile_size
+            next_screen_y = (next_y - self.camera_y) * self.tile_height
+            next_center_x = next_screen_x + self.tile_size // 2
+            next_center_y = next_screen_y + self.tile_height // 2
+            
+            # Only draw line if both points are on screen
+            if (next_screen_x >= -self.tile_size and next_screen_x < self.screen.get_width() + self.tile_size and
+                next_screen_y >= -self.tile_height and next_screen_y < gameplay_height + self.tile_height):
+                pygame.draw.line(self.screen, (0, 150, 255), (center_x, center_y), (next_center_x, next_center_y), 2)
+    
+    def _render_pause_overlay(self):
+        """Render pause overlay."""
+        # Create semi-transparent overlay
+        overlay = pygame.Surface(self.screen.get_size())
+        overlay.set_alpha(128)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+        
+        # Draw pause text
+        pause_text = self.font.render("PAUSED", True, (255, 255, 100))
+        pause_rect = pause_text.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2 - 20))
+        self.screen.blit(pause_text, pause_rect)
+        
+        # Draw instruction text
+        instruction_text = self.small_font.render("Press SPACE to resume", True, (200, 200, 200))
+        instruction_rect = instruction_text.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2 + 20))
+        self.screen.blit(instruction_text, instruction_rect)
+    
+    def _render_skill_popup(self):
+        """Render skill point allocation popup."""
+        if not self.player or not self.player.character:
+            return
+        
+        from system.character_system import StatType
+        
+        # Create semi-transparent overlay
+        overlay = pygame.Surface(self.screen.get_size())
+        overlay.set_alpha(180)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+        
+        # Popup dimensions
+        popup_width = 400
+        popup_height = 300
+        popup_x = (self.screen.get_width() - popup_width) // 2
+        popup_y = (self.screen.get_height() - popup_height) // 2
+        
+        # Draw popup background
+        pygame.draw.rect(self.screen, (50, 50, 50), (popup_x, popup_y, popup_width, popup_height))
+        pygame.draw.rect(self.screen, (200, 200, 200), (popup_x, popup_y, popup_width, popup_height), 2)
+        
+        # Title
+        title_text = self.font.render("Skill Point Allocation", True, (255, 255, 255))
+        title_rect = title_text.get_rect(center=(popup_x + popup_width // 2, popup_y + 30))
+        self.screen.blit(title_text, title_rect)
+        
+        # Available points
+        char = self.player.character
+        attribute_points = getattr(char, 'attribute_points', 0)
+        skill_points = getattr(char, 'skill_points', 0)
+        
+        points_text = f"Attribute Points: {attribute_points} | Skill Points: {skill_points}"
+        points_surface = self.small_font.render(points_text, True, (200, 200, 200))
+        points_rect = points_surface.get_rect(center=(popup_x + popup_width // 2, popup_y + 60))
+        self.screen.blit(points_surface, points_rect)
+        
+        # Attribute allocation section
+        if attribute_points > 0:
+            attr_title = self.small_font.render("Attributes (1-5 keys to allocate):", True, (255, 255, 100))
+            self.screen.blit(attr_title, (popup_x + 20, popup_y + 90))
+            
+            # List of attributes
+            attributes = [
+                (StatType.STRENGTH, "1"),
+                (StatType.DEXTERITY, "2"), 
+                (StatType.CONSTITUTION, "3"),
+                (StatType.PERCEPTION, "4"),
+                (StatType.MANA, "5")
+            ]
+            
+            y_offset = 120
+            for i, (stat, key) in enumerate(attributes):
+                current_value = char.stats.get_total_stat(stat)
+                stat_text = f"{key}. {stat.value}: {current_value}"
+                color = (255, 255, 255) if i == self.selected_stat else (200, 200, 200)
+                stat_surface = self.small_font.render(stat_text, True, color)
+                self.screen.blit(stat_surface, (popup_x + 30, popup_y + y_offset))
+                y_offset += 25
+        
+        # Instructions
+        instruction_text = "Press S to close | 1-5 to select attribute | + to allocate | - to deallocate"
+        instruction_surface = self.small_font.render(instruction_text, True, (150, 150, 150))
+        instruction_rect = instruction_surface.get_rect(center=(popup_x + popup_width // 2, popup_y + popup_height - 30))
+        self.screen.blit(instruction_surface, instruction_rect)
+    
+    def _render_log_popup(self):
+        """Render the full log popup window."""
+        if not self.log_messages:
+            return
+        
+        # Create semi-transparent overlay
+        overlay = pygame.Surface(self.screen.get_size())
+        overlay.set_alpha(180)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+        
+        # Popup dimensions
+        popup_width = 600
+        popup_height = 400
+        popup_x = (self.screen.get_width() - popup_width) // 2
+        popup_y = (self.screen.get_height() - popup_height) // 2
+        
+        # Draw popup background
+        pygame.draw.rect(self.screen, (50, 50, 50), (popup_x, popup_y, popup_width, popup_height))
+        pygame.draw.rect(self.screen, (200, 200, 200), (popup_x, popup_y, popup_width, popup_height), 2)
+        
+        # Title
+        title_text = self.font.render("Game Log", True, (255, 255, 255))
+        title_rect = title_text.get_rect(center=(popup_x + popup_width // 2, popup_y + 30))
+        self.screen.blit(title_text, title_rect)
+        
+        # Log content area
+        content_x = popup_x + 10
+        content_y = popup_y + 60
+        content_width = popup_width - 20
+        content_height = popup_height - 100
+        
+        # Draw content background
+        pygame.draw.rect(self.screen, (30, 30, 30), (content_x, content_y, content_width, content_height))
+        
+        # Calculate which messages to show based on scroll
+        total_messages = len(self.log_messages)
+        lines_per_page = content_height // 15  # Approximate lines that fit
+        max_scroll = max(0, total_messages - lines_per_page)
+        
+        # Clamp scroll to valid range
+        self.log_popup_scroll = max(0, min(self.log_popup_scroll, max_scroll))
+        
+        start_index = self.log_popup_scroll
+        end_index = min(total_messages, start_index + lines_per_page)
+        
+        # Render log messages
+        y_offset = content_y + 5
+        for i in range(start_index, end_index):
+            if i < len(self.log_messages):
+                message, color = self.log_messages[i]
+                # Truncate long messages
+                max_chars = (content_width - 10) // 8
+                if len(message) > max_chars:
+                    message = message[:max_chars-3] + "..."
+                
+                text = self.small_font.render(message, True, color)
+                self.screen.blit(text, (content_x + 5, y_offset))
+                y_offset += 15
+        
+        # Scroll indicator
+        if total_messages > lines_per_page:
+            scroll_text = f"Log: {self.log_popup_scroll + 1}-{min(total_messages, self.log_popup_scroll + lines_per_page)}/{total_messages}"
+            scroll_surface = self.small_font.render(scroll_text, True, (150, 150, 150))
+            self.screen.blit(scroll_surface, (content_x, content_y + content_height - 20))
+        
+        # Instructions
+        instruction_text = "Press L to close | UP/DOWN arrows to scroll | Mouse wheel to scroll"
+        instruction_surface = self.small_font.render(instruction_text, True, (150, 150, 150))
+        instruction_rect = instruction_surface.get_rect(center=(popup_x + popup_width // 2, popup_y + popup_height - 20))
+        self.screen.blit(instruction_surface, instruction_rect)
 
 def main():
     """Main entry point."""
-    game = Game()
+    parser = argparse.ArgumentParser(description='Mythica Dungeon Crawler')
+    parser.add_argument('-g', '--god-mode', action='store_true', 
+                       help='Enable god mode: invincible + 10000 gold')
+    
+    args = parser.parse_args()
+    
+    game = Game(god_mode=args.god_mode)
     game.run()
 
 if __name__ == "__main__":
