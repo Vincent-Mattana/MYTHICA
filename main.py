@@ -971,18 +971,12 @@ class Game:
     
     def get_viewport_offset(self):
         """Calculate viewport offset to center the game content."""
-        # Calculate the optimal viewport size for the current tile size
-        optimal_width = 1024  # Original designed width
-        optimal_height = 768  # Original designed height
-        
         screen_width = self.screen.get_width()
         screen_height = self.screen.get_height()
         
-        # If window is larger than optimal, center the content
-        offset_x = max(0, (screen_width - optimal_width) // 2)
-        offset_y = max(0, (screen_height - optimal_height) // 2)
-        
-        return offset_x, offset_y
+        # For now, let's use a simpler approach - always use full window
+        # This ensures elements are drawn relative to actual window edges
+        return 0, 0
     
     def update_camera(self):
         """Update camera position to follow player."""
@@ -990,24 +984,17 @@ class Game:
             # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
             gameplay_height = self.screen.get_height() - 60
             
-            # Get viewport offset for centering
-            viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
-            
-            # Adjust effective screen size for camera calculations
-            effective_width = self.screen.get_width() - (2 * viewport_offset_x)
-            effective_height = gameplay_height - (2 * viewport_offset_y)
-            
             # Center camera on player
-            self.camera_x = self.player.x - max(1, effective_width // (2 * self.tile_size))
-            self.camera_y = self.player.y - max(1, effective_height // (2 * self.tile_height))
+            self.camera_x = self.player.x - self.screen.get_width() // (2 * self.tile_size)
+            self.camera_y = self.player.y - gameplay_height // (2 * self.tile_height)
             
             # Keep camera within bounds
             if self.current_area == GameArea.TOWN:
-                max_camera_x = max(0, self.town.width - max(1, effective_width // self.tile_size))
-                max_camera_y = max(0, self.town.height - max(1, effective_height // self.tile_height))
+                max_camera_x = max(0, self.town.width - self.screen.get_width() // self.tile_size)
+                max_camera_y = max(0, self.town.height - gameplay_height // self.tile_height)
             else:
-                max_camera_x = max(0, self.dungeon.width - max(1, effective_width // self.tile_size))
-                max_camera_y = max(0, self.dungeon.height - max(1, effective_height // self.tile_height))
+                max_camera_x = max(0, self.dungeon.width - self.screen.get_width() // self.tile_size)
+                max_camera_y = max(0, self.dungeon.height - gameplay_height // self.tile_height)
             
             self.camera_x = max(0, min(self.camera_x, max_camera_x))
             self.camera_y = max(0, min(self.camera_y, max_camera_y))
@@ -1581,25 +1568,24 @@ class Game:
         frame_color = (100, 100, 100)
         frame_thickness = 2
         
-        # Calculate gameplay area (screen height - 60 pixels for bottom frame)
-        gameplay_height = self.screen.get_height() - 60
+        # Use full screen dimensions
+        screen_width = self.screen.get_width()
+        screen_height = self.screen.get_height()
+        gameplay_height = screen_height - 60
         
         # Draw frame around gameplay area
         pygame.draw.rect(self.screen, frame_color, 
-                        (0, 0, self.screen.get_width(), gameplay_height), 
+                        (0, 0, screen_width, gameplay_height), 
                         frame_thickness)
         
         # Draw bottom frame area
         pygame.draw.rect(self.screen, (40, 40, 50), 
-                        (0, gameplay_height, self.screen.get_width(), 60))
+                        (0, gameplay_height, screen_width, 60))
     
     def _render_town(self):
         """Render the town using sprites."""
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
-        
-        # Get viewport offset for centering
-        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
         
         for y in range(self.town.height):
             for x in range(self.town.width):
@@ -1607,8 +1593,8 @@ class Game:
                 if not (self._is_tile_visible(x, y) or self._is_tile_explored(x, y)):
                     continue
                     
-                screen_x = (x - self.camera_x) * self.tile_size + viewport_offset_x
-                screen_y = (y - self.camera_y) * self.tile_height + viewport_offset_y
+                screen_x = (x - self.camera_x) * self.tile_size
+                screen_y = (y - self.camera_y) * self.tile_height
                 
                 if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
                     screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1631,17 +1617,14 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
-        # Get viewport offset for centering
-        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
-        
         for y in range(self.dungeon.height):
             for x in range(self.dungeon.width):
                 # Only render if tile is visible or explored
                 if not (self._is_tile_visible(x, y) or self._is_tile_explored(x, y)):
                     continue
                     
-                screen_x = (x - self.camera_x) * self.tile_size + viewport_offset_x
-                screen_y = (y - self.camera_y) * self.tile_height + viewport_offset_y
+                screen_x = (x - self.camera_x) * self.tile_size
+                screen_y = (y - self.camera_y) * self.tile_height
                 
                 if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
                     screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1803,11 +1786,8 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
-        # Get viewport offset for centering
-        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
-        
-        screen_x = (self.player.x - self.camera_x) * self.tile_size + viewport_offset_x
-        screen_y = (self.player.y - self.camera_y) * self.tile_height + viewport_offset_y
+        screen_x = (self.player.x - self.camera_x) * self.tile_size
+        screen_y = (self.player.y - self.camera_y) * self.tile_height
         
         if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
             screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1846,9 +1826,6 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
-        # Get viewport offset for centering
-        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
-        
         for i, enemy in enumerate(self.enemy_manager.get_living_enemies()):
             enemy_id = f"enemy_{i}_{enemy.enemy_type.name}_{enemy.x}_{enemy.y}"
             # Render if enemy is visible or has a last known position
@@ -1861,8 +1838,8 @@ class Game:
             else:
                 render_x, render_y, _ = self.last_known_positions[enemy_id]
             
-            screen_x = (render_x - self.camera_x) * self.tile_size + viewport_offset_x
-            screen_y = (render_y - self.camera_y) * self.tile_height + viewport_offset_y
+            screen_x = (render_x - self.camera_x) * self.tile_size
+            screen_y = (render_y - self.camera_y) * self.tile_height
             
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
                 screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1917,9 +1894,6 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
-        # Get viewport offset for centering
-        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
-        
         for npc in self.town.npcs:
             npc_id = f"npc_{npc.name}_{npc.x}_{npc.y}"
             # Render if NPC is visible or has a last known position
@@ -1932,8 +1906,8 @@ class Game:
             else:
                 render_x, render_y, _ = self.last_known_positions[npc_id]
                 
-            screen_x = (render_x - self.camera_x) * self.tile_size + viewport_offset_x
-            screen_y = (render_y - self.camera_y) * self.tile_height + viewport_offset_y
+            screen_x = (render_x - self.camera_x) * self.tile_size
+            screen_y = (render_y - self.camera_y) * self.tile_height
             
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
                 screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1961,12 +1935,9 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
-        # Get viewport offset for centering
-        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
-        
         for (grid_x, grid_y), sprite_name in self.town.painted_sprites.items():
-            screen_x = (grid_x - self.camera_x) * self.tile_size + viewport_offset_x
-            screen_y = (grid_y - self.camera_y) * self.tile_height + viewport_offset_y
+            screen_x = (grid_x - self.camera_x) * self.tile_size
+            screen_y = (grid_y - self.camera_y) * self.tile_height
             
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
                 screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
@@ -1995,6 +1966,10 @@ class Game:
     
     def _render_ui(self):
         """Render the user interface."""
+        # UI positioning relative to actual window edges
+        ui_base_x = 10
+        ui_base_y = self.screen.get_height() - 60
+        
         # Player stats and health bar
         if self.player:
             char = self.player.character
@@ -2003,13 +1978,13 @@ class Game:
                 stats_text += f" | Dungeon Level: {self.dungeon_level}"
             
             text = self.font.render(stats_text, True, (255, 255, 255))
-            self.screen.blit(text, (10, self.screen.get_height() - 60))
+            self.screen.blit(text, (ui_base_x, ui_base_y))
             
             # Health bar
-            self._render_health_bar(char.current_hp, char.max_hp, 10, self.screen.get_height() - 40)
+            self._render_health_bar(char.current_hp, char.max_hp, ui_base_x, ui_base_y + 20)
             
             # Mana bar
-            self._render_mana_bar(char.current_mana, char.max_mana, 220, self.screen.get_height() - 40)
+            self._render_mana_bar(char.current_mana, char.max_mana, ui_base_x + 210, ui_base_y + 20)
         
         # Game log in bottom bar
         self._render_log_panel()
@@ -2107,10 +2082,10 @@ class Game:
         if not self.log_messages:
             return
         
-        # Log panel dimensions - right third extending to the edge
-        panel_width = self.screen.get_width() // 3  # Right third of screen width
+        # Log panel dimensions - right third extending to the actual edge
+        panel_width = self.screen.get_width() // 3  # Right third of actual screen width
         panel_height = 60  # Full height of bottom border
-        panel_x = self.screen.get_width() - panel_width  # Right side extending to edge
+        panel_x = self.screen.get_width() - panel_width  # Right side extending to actual edge
         panel_y = self.screen.get_height() - 60
         
         # Dark background
@@ -2256,16 +2231,9 @@ class Game:
     
     def _screen_to_tile_coords(self, screen_x, screen_y):
         """Convert screen coordinates to tile coordinates with improved precision."""
-        # Account for viewport offset for centering
-        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
-        
-        # Adjust for viewport offset
-        adjusted_x = screen_x - viewport_offset_x
-        adjusted_y = screen_y - viewport_offset_y
-        
         # Account for camera offset
-        world_x = adjusted_x + self.camera_x * self.tile_size
-        world_y = adjusted_y + self.camera_y * self.tile_height
+        world_x = screen_x + self.camera_x * self.tile_size
+        world_y = screen_y + self.camera_y * self.tile_height
         
         # Convert to tile coordinates with proper rounding for better accuracy
         tile_x = round(world_x / self.tile_size)
@@ -3373,13 +3341,10 @@ class Game:
         # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
         gameplay_height = self.screen.get_height() - 60
         
-        # Get viewport offset for centering
-        viewport_offset_x, viewport_offset_y = self.get_viewport_offset()
-        
         # Render path as a series of connected dots
         for i, (x, y) in enumerate(self.click_path):
-            screen_x = (x - self.camera_x) * self.tile_size + viewport_offset_x
-            screen_y = (y - self.camera_y) * self.tile_height + viewport_offset_y
+            screen_x = (x - self.camera_x) * self.tile_size
+            screen_y = (y - self.camera_y) * self.tile_height
             
             # Check if the tile is on screen
             if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and

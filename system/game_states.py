@@ -555,6 +555,10 @@ class GameStateManager:
         # Clear previous option rectangles
         self.menu_option_rects = []
         
+        # Get current screen dimensions
+        screen_width, screen_height = self.screen.get_size()
+        center_x = screen_width // 2
+        
         # Draw background image if available
         if self.background_image:
             self.screen.blit(self.background_image, (0, 0))
@@ -562,30 +566,30 @@ class GameStateManager:
             # Fallback to solid background
             self.screen.fill(self.bg_color)
         
-        # Title
+        # Title - positioned relative to screen center
         title_surface = self.title_font.render("TREASURE GOBLIN", True, self.accent_color)
-        title_rect = title_surface.get_rect(center=(512, 150))
+        title_rect = title_surface.get_rect(center=(center_x, screen_height // 4))
         self.screen.blit(title_surface, title_rect)
         
         subtitle_surface = self.text_font.render("DUNGEON CRAWLER", True, self.text_color)
-        subtitle_rect = subtitle_surface.get_rect(center=(512, 200))
+        subtitle_rect = subtitle_surface.get_rect(center=(center_x, screen_height // 4 + 50))
         self.screen.blit(subtitle_surface, subtitle_rect)
         
-        # Menu options
+        # Menu options - positioned relative to screen center
         menu_options = ["NEW GAME", "QUIT"]
-        start_y = 300
+        start_y = screen_height // 2
         
         for i, option in enumerate(menu_options):
             color = self.selected_color if i == self.menu_selection else self.text_color
             text_surface = self.header_font.render(option, True, color)
-            text_rect = text_surface.get_rect(center=(512, start_y + i * 60))
+            text_rect = text_surface.get_rect(center=(center_x, start_y + i * 60))
             self.screen.blit(text_surface, text_rect)
             
             # Add padding to the clickable area
             padded_rect = text_rect.inflate(40, 20)
             self.menu_option_rects.append((padded_rect, i))
         
-        # Controls
+        # Controls - positioned relative to screen
         controls = [
             "USE W/S OR UP/DOWN TO NAVIGATE",
             "CLICK OR PRESS ENTER/SPACE TO SELECT",
@@ -593,15 +597,20 @@ class GameStateManager:
             "PRESS ESCAPE TO QUIT"
         ]
         
+        controls_start_y = screen_height - 150  # Position near bottom
         for i, control in enumerate(controls):
             control_surface = self.small_font.render(control, True, self.text_color)
-            control_rect = control_surface.get_rect(center=(512, 500 + i * 25))
+            control_rect = control_surface.get_rect(center=(center_x, controls_start_y + i * 25))
             self.screen.blit(control_surface, control_rect)
     
     def _render_class_selection(self):
         """Render the class selection screen."""
         # Clear previous option rectangles
         self.class_option_rects = []
+        
+        # Get current screen dimensions
+        screen_width, screen_height = self.screen.get_size()
+        center_x = screen_width // 2
         
         # Draw background image if available
         if self.background_image:
@@ -610,8 +619,8 @@ class GameStateManager:
             # Fallback to solid background
             self.screen.fill(self.bg_color)
         
-        # Draw dividing line
-        pygame.draw.line(self.screen, self.accent_color, (256, 0), (256, 768), 2)
+        # Draw dividing line at screen center
+        pygame.draw.line(self.screen, self.accent_color, (center_x, 0), (center_x, screen_height), 2)
         
         # Load portraits if not already loaded
         if not hasattr(self, 'class_portraits'):
@@ -631,9 +640,10 @@ class GameStateManager:
                 portrait.blit(portrait_sheet, (0, 0), (pos[0], pos[1], 48, 48))
                 self.class_portraits[char_class] = portrait
 
-        # Class list (left side)
+        # Class list (left side) - positioned relative to screen
         classes = list(CharacterClass)
-        start_y = 100
+        left_x = center_x // 2  # Center of left half
+        start_y = screen_height // 4
         spacing = 80  # Increased spacing to accommodate portraits
         
         for i, char_class in enumerate(classes):
@@ -642,36 +652,36 @@ class GameStateManager:
             
             # Draw portrait
             portrait = self.class_portraits[char_class]
-            portrait_rect = portrait.get_rect(midleft=(32, y_pos))
+            portrait_rect = portrait.get_rect(midleft=(left_x - 80, y_pos))
             self.screen.blit(portrait, portrait_rect)
             
             # Draw class name
             text_surface = self.text_font.render(char_class.value.upper(), True, color)
-            text_rect = text_surface.get_rect(center=(160, y_pos))
+            text_rect = text_surface.get_rect(center=(left_x, y_pos))
             self.screen.blit(text_surface, text_rect)
             
             # Add padding to the clickable area (include portrait area)
-            padded_rect = pygame.Rect(16, y_pos - 30, 224, 60)
+            padded_rect = pygame.Rect(left_x - 120, y_pos - 30, 240, 60)
             self.class_option_rects.append((padded_rect, i))
         
-        # Class details (right side)
+        # Class details (right side) - positioned relative to screen
         selected_class = classes[self.class_selection]
         class_data = CharacterClassData.CLASS_DEFINITIONS[selected_class]
-        right_x = 640  # Center point for right side
+        right_x = center_x + (center_x // 2)  # Center of right half
         
         # Draw large portrait for selected class
         portrait = self.class_portraits[selected_class]
         large_portrait = pygame.transform.scale(portrait, (96, 96))
-        portrait_rect = large_portrait.get_rect(midtop=(right_x, 40))
+        portrait_rect = large_portrait.get_rect(midtop=(right_x, screen_height // 8))
         self.screen.blit(large_portrait, portrait_rect)
 
         # Class name and description
         class_surface = self.title_font.render(selected_class.value.upper(), True, self.accent_color)
-        class_rect = class_surface.get_rect(center=(right_x, 160))
+        class_rect = class_surface.get_rect(center=(right_x, screen_height // 4))
         self.screen.blit(class_surface, class_rect)
         
         # Description - split into two lines
-        desc_y = 220
+        desc_y = screen_height // 4 + 60
         desc = class_data['description'].upper()
         words = desc.split()
         mid = len(words) // 2
@@ -686,8 +696,8 @@ class GameStateManager:
         line2_rect = line2_surface.get_rect(center=(right_x, desc_y + 30))
         self.screen.blit(line2_surface, line2_rect)
         
-        # Stats
-        stats_y = 320
+        # Stats - positioned relative to screen
+        stats_y = screen_height // 2
         stats_header_surface = self.header_font.render("STARTING STATS", True, self.accent_color)
         stats_header_rect = stats_header_surface.get_rect(center=(right_x, stats_y))
         self.screen.blit(stats_header_surface, stats_header_rect)
@@ -717,6 +727,10 @@ class GameStateManager:
     
     def _render_name_entry(self):
         """Render the name entry screen."""
+        # Get current screen dimensions
+        screen_width, screen_height = self.screen.get_size()
+        center_x = screen_width // 2
+        
         # Draw background image if available
         if self.background_image:
             self.screen.blit(self.background_image, (0, 0))
@@ -724,24 +738,24 @@ class GameStateManager:
             # Fallback to solid background
             self.screen.fill(self.bg_color)
         
-        # Title
+        # Title - positioned relative to screen
         title_surface = self.title_font.render("ENTER YOUR NAME", True, self.accent_color)
-        title_rect = title_surface.get_rect(center=(512, 200))
+        title_rect = title_surface.get_rect(center=(center_x, screen_height // 4))
         self.screen.blit(title_surface, title_rect)
         
-        # Selected class info
+        # Selected class info - positioned relative to screen
         classes = list(CharacterClass)
         selected_class = classes[self.class_selection]
         class_text = f"Class: {selected_class.value}"
         class_surface = self.header_font.render(class_text, True, self.text_color)
-        class_rect = class_surface.get_rect(center=(512, 250))
+        class_rect = class_surface.get_rect(center=(center_x, screen_height // 4 + 50))
         self.screen.blit(class_surface, class_rect)
         
-        # Name input field
-        input_y = 350
+        # Name input field - positioned relative to screen
+        input_y = screen_height // 2 - 25
         input_width = 400
         input_height = 50
-        input_x = (1024 - input_width) // 2
+        input_x = (screen_width - input_width) // 2
         
         # Input field background - red on black theme
         pygame.draw.rect(self.screen, (20, 0, 0), (input_x, input_y, input_width, input_height))  # Dark red background
@@ -783,6 +797,10 @@ class GameStateManager:
         # Clear previous option rectangles
         self.game_over_option_rects = []
         
+        # Get current screen dimensions
+        screen_width, screen_height = self.screen.get_size()
+        center_x = screen_width // 2
+        
         # Draw background image if available
         if self.background_image:
             self.screen.blit(self.background_image, (0, 0))
@@ -791,27 +809,27 @@ class GameStateManager:
             self.screen.fill(self.bg_color)
         
         # Semi-transparent overlay
-        overlay = pygame.Surface((1024, 768))
+        overlay = pygame.Surface((screen_width, screen_height))
         overlay.set_alpha(200)
         overlay.fill((0, 0, 0))
         self.screen.blit(overlay, (0, 0))
         
-        # Game Over title
+        # Game Over title - positioned relative to screen
         game_over_surface = self.title_font.render("GAME OVER", True, self.accent_color)
-        game_over_rect = game_over_surface.get_rect(center=(512, 150))
+        game_over_rect = game_over_surface.get_rect(center=(center_x, screen_height // 4))
         self.screen.blit(game_over_surface, game_over_rect)
         
-        # Score display
+        # Score display - positioned relative to screen
         if self.game and hasattr(self.game, 'final_score'):
             score_text = f"FINAL SCORE: {self.game.final_score}"
             score_surface = self.header_font.render(score_text, True, self.text_color)
-            score_rect = score_surface.get_rect(center=(512, 200))
+            score_rect = score_surface.get_rect(center=(center_x, screen_height // 4 + 50))
             self.screen.blit(score_surface, score_rect)
         
-        # High scores
+        # High scores - positioned relative to screen
         if self.game and hasattr(self.game, 'high_scores') and self.game.high_scores:
             high_scores_surface = self.small_font.render("HIGH SCORES", True, (255, 255, 255))
-            high_scores_rect = high_scores_surface.get_rect(center=(512, 250))
+            high_scores_rect = high_scores_surface.get_rect(center=(center_x, screen_height // 4 + 100))
             self.screen.blit(high_scores_surface, high_scores_rect)
             
             # Show top 5 high scores
