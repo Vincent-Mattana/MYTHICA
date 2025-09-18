@@ -135,3 +135,28 @@ Monsters.png,144,96,85,lizard
 Monsters.png,240,96,91,bird
 Monsters.png,112,432,349,slime
 Monsters.png,80,504,404,goblin
+Monsters.png,80,480,385,goblin mage
+Monsters.png,128,480,388,goblin warrior
+Monsters.png,128,504,407,goblin warrior 2
+Terrain_Objects.png,32,96,82,Blood1
+Terrain_Objects.png,96,96,86,blood2
+Terrain_Objects.png,48,96,83,blood3
+Terrain_Objects.png,64,96,84,blood4
+Terrain_Objects.png,16,96,81,gore1
+Terrain_Objects.png,112,96,87,blood5
+Terrain_Objects.png,128,96,88,blood6
+Terrain_Objects.png,80,96,85,blood7
+Terrain_Objects.png,144,96,89,blood8
+Terrain_Objects.png,160,96,90,blood9
+Terrain_Objects.png,176,96,91,blood10
+Interface.png,0,0,0,border tl
+Interface.png,16,0,1,border tr
+Interface.png,32,0,2,border bl
+Interface.png,48,0,3,border br
+Interface.png,64,0,4,border hor
+Interface.png,80,0,5,border ver
+Interface.png,96,0,6,target
+Interface.png,112,0,7,marked target
+Interface.png,128,0,8,mark
+Interface.png,144,0,9,Frame
+Interface.png,160,0,10,frame clipped

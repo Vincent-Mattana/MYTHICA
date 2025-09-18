@@ -441,6 +441,12 @@ class Game:
         self.auto_explore_active = False
         self.auto_explore_path = []
         self.auto_explore_target = None
+        
+        # Zoom settings
+        self.zoom_level = 3.2  # Default zoom to 3.2x
+        self.min_zoom = 0.5    # Minimum zoom (50%)
+        self.max_zoom = 8.0    # Maximum zoom (800% - much closer!)
+        self.zoom_step = 0.2   # How much to zoom per step (faster zooming)
         self.auto_explore_attack_mode = False  # New mode that attacks enemies
         self.auto_explore_failed_attempts = 0  # Track failed attempts to prevent infinite loops
         
@@ -454,6 +460,18 @@ class Game:
         self.click_path = []
         self.click_target = None
         self.click_navigation_active = False
+        self.mouse_held = False  # Track if mouse is being held down
+        self.last_mouse_pos = None  # Track last mouse position
+        self.last_mouse_click_time = 0.0  # Throttle continuous clicks
+        self.last_click_pos = None  # Track last click position for double-click detection
+        self.double_click_time = 0.5  # Maximum time between clicks for double-click
+        
+        # Player sprite direction
+        self.player_direction = 'left'  # Track which way player is facing
+        
+        # Blood and gore system
+        self.blood_splatters = {}  # (x, y) -> {'intensity': 0.0-1.0, 'sprite': 'blood_sprite_name'}
+        self.corpses = {}  # (x, y) -> {'enemy_data': enemy, 'sprite': 'corpse_sprite', 'decay_time': float}
         
         # Death and scoring
         self.is_dead = False
@@ -491,8 +509,8 @@ class Game:
         # Camera
         self.camera_x = 0
         self.camera_y = 0
-        self.tile_size = 16  # Sprite width
-        self.tile_height = 24  # Sprite height
+        self.base_tile_size = 16  # Base sprite width
+        self.base_tile_height = 24  # Base sprite height
         
         # UI
         self.font = pygame.font.Font(None, 24)
@@ -536,6 +554,10 @@ class Game:
         
         # Clear sprite cache
         self.tile_sprites.clear()
+        
+        # Clear blood and corpses
+        self.blood_splatters.clear()
+        self.corpses.clear()
     
     def _clear_level_data_for_new_level(self):
         """Clear level-specific data for a completely new level."""
@@ -548,6 +570,10 @@ class Game:
         
         # Clear sprite cache for new level
         self.tile_sprites.clear()
+        
+        # Clear blood and corpses for new level
+        self.blood_splatters.clear()
+        self.corpses.clear()
     
     def _save_level_data(self, level_number: int):
         """Save current level data."""
@@ -557,9 +583,12 @@ class Game:
             'last_known_positions': self.last_known_positions.copy(),
             'tile_sprites': self.tile_sprites.copy(),
             'dungeon': self.dungeon,
-            'enemies': self.enemy_manager.get_living_enemies().copy()
+            'enemies': self.enemy_manager.get_living_enemies().copy(),
+            'blood_splatters': self.blood_splatters.copy(),
+            'corpses': self.corpses.copy()
         }
         self.saved_levels[level_number] = level_data
+        print(f"DEBUG: Saved level {level_number} data (total levels stored: {len(self.saved_levels)})")
     
     def _restore_level_data(self, level_number: int):
         """Restore level data if it exists."""
@@ -574,7 +603,14 @@ class Game:
             # Restore enemies
             self.enemy_manager.enemies = level_data['enemies'].copy()
             
+            # Restore blood and corpses (with fallback for older saves)
+            self.blood_splatters = level_data.get('blood_splatters', {}).copy()
+            self.corpses = level_data.get('corpses', {}).copy()
+            
+            print(f"DEBUG: Restored level {level_number} data (total levels stored: {len(self.saved_levels)})")
             return True
+        
+        print(f"DEBUG: Level {level_number} not found in saved levels (total levels stored: {len(self.saved_levels)})")
         return False
     
     def _save_town_data(self):
@@ -960,6 +996,16 @@ class Game:
         self.add_to_log(f"Welcome to Treasure Goblin, {character.name}!", (100, 255, 100))
         self.add_to_log("Explore the town and find the dungeon entrance!", (255, 255, 100))
     
+    @property
+    def tile_size(self):
+        """Get current tile size accounting for zoom level."""
+        return int(self.base_tile_size * self.zoom_level)
+    
+    @property 
+    def tile_height(self):
+        """Get current tile height accounting for zoom level."""
+        return int(self.base_tile_height * self.zoom_level)
+    
     def add_to_log(self, message: str, color: Tuple[int, int, int] = (255, 255, 255)):
         """Add a message to the game log."""
         self.log_messages.append((message, color))
@@ -1014,7 +1060,31 @@ class Game:
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # Left click
                 if self.state_manager.current_state == GameState.PLAYING:
+                    self.mouse_held = True
+                    self.last_mouse_pos = event.pos
                     self._handle_mouse_click(event.pos)
+            elif event.button == 4:  # Mouse wheel up
+                if self.state_manager.current_state == GameState.PLAYING:
+                    self._zoom_in()  # Mouse wheel doesn't use modifiers
+            elif event.button == 5:  # Mouse wheel down
+                if self.state_manager.current_state == GameState.PLAYING:
+                    self._zoom_out()  # Mouse wheel doesn't use modifiers
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1:  # Left click release
+                if self.state_manager.current_state == GameState.PLAYING:
+                    self.mouse_held = False
+                    self.last_mouse_pos = None
+        elif event.type == pygame.MOUSEMOTION:
+            if self.state_manager.current_state == GameState.PLAYING and self.mouse_held:
+                # Continuous navigation while mouse is held
+                current_time = pygame.time.get_ticks() / 1000.0
+                current_pos = event.pos
+                
+                # More responsive - trigger on movement OR if enough time has passed
+                if (current_time - self.last_mouse_click_time >= 0.05):  # 20 times per second max
+                    self._handle_mouse_click(current_pos)
+                    self.last_mouse_click_time = current_time
+                self.last_mouse_pos = current_pos
         elif event.type == pygame.VIDEORESIZE:
             self._handle_window_resize(event)
         elif event.type == pygame.QUIT:
@@ -1033,37 +1103,51 @@ class Game:
             self._handle_log_popup_input(key)
             return
         
+        # Get modifier states for universal modifiers
+        keys = pygame.key.get_pressed()
+        ctrl_held = keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]
+        shift_held = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
+        
+        # Calculate universal modifier multiplier
+        modifier = 1
+        if ctrl_held and shift_held:
+            modifier = 100  # Ctrl+Shift = +100
+        elif shift_held:
+            modifier = 10   # Shift = +10
+        elif ctrl_held:
+            modifier = 5    # Ctrl = +5
+        
         current_time = pygame.time.get_ticks() / 1000.0
         
-        # Movement (numpad only)
+        # Movement (with modifiers for multi-step movement)
         if key == pygame.K_UP:
-            self._try_move_player(0, -1, current_time)
+            self._try_move_player_multiple(0, -1, current_time, modifier)
         elif key == pygame.K_DOWN:
-            self._try_move_player(0, 1, current_time)
+            self._try_move_player_multiple(0, 1, current_time, modifier)
         elif key == pygame.K_LEFT:
-            self._try_move_player(-1, 0, current_time)
+            self._try_move_player_multiple(-1, 0, current_time, modifier)
         elif key == pygame.K_RIGHT:
-            self._try_move_player(1, 0, current_time)
+            self._try_move_player_multiple(1, 0, current_time, modifier)
         
-        # Diagonal movement
+        # Diagonal movement (with modifiers)
         elif key == pygame.K_KP7:  # Northwest
-            self._try_move_player(-1, -1, current_time)
+            self._try_move_player_multiple(-1, -1, current_time, modifier)
         elif key == pygame.K_KP8:  # North
-            self._try_move_player(0, -1, current_time)
+            self._try_move_player_multiple(0, -1, current_time, modifier)
         elif key == pygame.K_KP9:  # Northeast
-            self._try_move_player(1, -1, current_time)
+            self._try_move_player_multiple(1, -1, current_time, modifier)
         elif key == pygame.K_KP4:  # West
-            self._try_move_player(-1, 0, current_time)
-        elif key == pygame.K_KP5:  # Wait (numpad 5)
-            self.add_to_log("You wait...", (200, 200, 200))
+            self._try_move_player_multiple(-1, 0, current_time, modifier)
+        elif key == pygame.K_KP5:  # Wait (numpad 5) - also affected by modifiers
+            self._wait_multiple_turns(modifier)
         elif key == pygame.K_KP6:  # East
-            self._try_move_player(1, 0, current_time)
+            self._try_move_player_multiple(1, 0, current_time, modifier)
         elif key == pygame.K_KP1:  # Southwest
-            self._try_move_player(-1, 1, current_time)
+            self._try_move_player_multiple(-1, 1, current_time, modifier)
         elif key == pygame.K_KP2:  # South
-            self._try_move_player(0, 1, current_time)
+            self._try_move_player_multiple(0, 1, current_time, modifier)
         elif key == pygame.K_KP3:  # Southeast
-            self._try_move_player(1, 1, current_time)
+            self._try_move_player_multiple(1, 1, current_time, modifier)
         
         # Actions
         elif key == pygame.K_c:  # Character sheet
@@ -1100,6 +1184,27 @@ class Game:
             self._toggle_fullscreen()
         elif key == pygame.K_F10:  # Toggle resizable
             self._toggle_resizable()
+        elif key == pygame.K_KP_PLUS:  # Numpad + for zoom in (with modifiers)
+            self._zoom_in_multiple(modifier)
+        elif key == pygame.K_KP_MINUS:  # Numpad - for zoom out (with modifiers)
+            self._zoom_out_multiple(modifier)
+        elif key == pygame.K_KP_ENTER:  # Numpad Enter to reset zoom to default (3.2x)
+            self._reset_zoom()
+        elif key == pygame.K_HOME:  # HOME key to reset to no zoom (1.0x)
+            self._reset_to_no_zoom()
+    
+    def _try_move_player_multiple(self, dx: int, dy: int, current_time: float, steps: int):
+        """Try to move the player multiple steps with modifiers."""
+        if not self.player or self.is_dead:
+            return
+        
+        for i in range(steps):
+            if not self.player.can_move(current_time) or self.is_dead:
+                break
+            self._try_move_player(dx, dy, current_time)
+            # Small delay between steps for visual feedback
+            if steps > 1:
+                current_time += 0.05  # 50ms delay between steps
     
     def _try_move_player(self, dx: int, dy: int, current_time: float):
         """Try to move the player."""
@@ -1138,6 +1243,13 @@ class Game:
                 # Attack the enemy
                 self._attack_enemy(enemy_at_destination)
             else:
+                # Update sprite direction based on movement
+                if dx > 0:
+                    self.player_direction = 'right'
+                elif dx < 0:
+                    self.player_direction = 'left'
+                # For up/down movement, keep current direction
+                
                 # Normal movement
                 self.player.move_to(new_x, new_y, current_time)
                 self.update_camera()
@@ -1205,8 +1317,13 @@ class Game:
         if not self._restore_level_data(self.dungeon_level):
             # Clear level-specific data for new dungeon
             self._clear_level_data_for_new_level()
-            
-        self.dungeon = Dungeon(50, 40, self.dungeon_level)
+            # Only create new dungeon if restoration failed
+            self.dungeon = Dungeon(50, 40, self.dungeon_level)
+            self.add_to_log(f"Generated new dungeon level {self.dungeon_level}", (255, 255, 0))
+            print(f"DEBUG: Generated NEW dungeon level {self.dungeon_level}")
+        else:
+            self.add_to_log(f"Restored existing dungeon level {self.dungeon_level}", (100, 255, 100))
+            print(f"DEBUG: Restored EXISTING dungeon level {self.dungeon_level}")
         
         # Place player at staircase up position (stairs going up)
         if self.dungeon.staircase_up_pos:
@@ -1249,8 +1366,13 @@ class Game:
         if not self._restore_level_data(self.dungeon_level):
             # Clear level-specific data for new level
             self._clear_level_data_for_new_level()
-            
-        self.dungeon = Dungeon(50, 40, self.dungeon_level)
+            # Only create new dungeon if restoration failed
+            self.dungeon = Dungeon(50, 40, self.dungeon_level)
+            self.add_to_log(f"Generated new dungeon level {self.dungeon_level}", (255, 255, 0))
+            print(f"DEBUG: Generated NEW dungeon level {self.dungeon_level}")
+        else:
+            self.add_to_log(f"Restored existing dungeon level {self.dungeon_level}", (100, 255, 100))
+            print(f"DEBUG: Restored EXISTING dungeon level {self.dungeon_level}")
         
         # Place player at staircase up position (stairs going up)
         if self.dungeon.staircase_up_pos:
@@ -1489,6 +1611,14 @@ class Game:
             print("DEBUG: Game is paused, skipping update")
             return
         
+        # Handle continuous mouse hold navigation
+        if (self.mouse_held and self.last_mouse_pos):
+            current_time = pygame.time.get_ticks() / 1000.0
+            # Continuous navigation while holding mouse (5 times per second)
+            if current_time - self.last_mouse_click_time >= 0.2:
+                self._handle_mouse_click(self.last_mouse_pos)
+                self.last_mouse_click_time = current_time
+        
         # Update light flickering effect
         self._update_light_flicker(dt)
         
@@ -1527,10 +1657,16 @@ class Game:
         # Draw frame around gameplay area
         self._render_game_frame()
         
+        # Set clipping area for gameplay to ensure nothing renders below bottom border
+        self._set_gameplay_clip()
+        
         if self.current_area == GameArea.TOWN:
             self._render_town()
         else:
             self._render_dungeon()
+        
+        # Render blood splatters and corpses (on top of terrain, under characters)
+        self._render_blood_and_corpses()
         
         # Render player
         if self.player:
@@ -1545,11 +1681,14 @@ class Game:
             self._render_npcs()
             self._render_painted_sprites()
         
+        # Clear clipping before rendering UI elements
+        self._clear_gameplay_clip()
+        
+        # Render XP bar (between gameplay and UI)
+        self._render_xp_bar()
+        
         # Render UI
         self._render_ui()
-        
-        # Render XP bar
-        self._render_xp_bar()
         
         # Render skill popup
         if self.skill_popup_open:
@@ -1578,9 +1717,13 @@ class Game:
                         (0, 0, screen_width, gameplay_height), 
                         frame_thickness)
         
-        # Draw bottom frame area
+        # Draw bottom frame area - ensure it's always clear and properly defined
         pygame.draw.rect(self.screen, (40, 40, 50), 
                         (0, gameplay_height, screen_width, 60))
+        
+        # Add a separation line to clearly define the boundary
+        pygame.draw.line(self.screen, (80, 80, 80), 
+                        (0, gameplay_height), (screen_width, gameplay_height), 2)
     
     def _render_town(self):
         """Render the town using sprites."""
@@ -1665,7 +1808,7 @@ class Game:
                     tint_color = (flicker_factor, flicker_factor, flicker_factor)
             self.sprite_manager.sprite_system.draw_sprite(
                 self.screen, sprite_name, screen_x, screen_y, 
-                scale=1, prevent_overlap=False, tint_color=tint_color
+                scale=self.zoom_level, prevent_overlap=False, tint_color=tint_color
             )
         else:
             # Fallback to color rendering
@@ -1795,31 +1938,45 @@ class Game:
             # Try to use player sprite
             player_sprite = self._get_player_sprite()
             if player_sprite and self.sprite_manager.sprite_system.get_sprite(player_sprite):
-                # Apply darker tint if player is in fog of war (explored but not visible)
-                tint_color = None
+                # Apply goblin green tint and fog of war if needed
+                goblin_green_tint = (0.3, 1.0, 0.3)  # Goblin green
+                
                 if self._is_tile_explored(self.player.x, self.player.y) and not self._is_tile_visible(self.player.x, self.player.y):
-                    tint_color = self._get_fog_of_war_tint()
+                    # Darker goblin green in fog of war
+                    tint_color = (0.12, 0.4, 0.12)  # Dimmed goblin green
+                else:
+                    tint_color = goblin_green_tint
                 
                 # Draw player sprite without centering offsets
                 self.sprite_manager.sprite_system.draw_sprite(
                     self.screen, player_sprite, screen_x, screen_y, 
-                    scale=1, prevent_overlap=False, tint_color=tint_color
+                    scale=self.zoom_level, prevent_overlap=False, tint_color=tint_color
                 )
             else:
-                # Fallback to colored circle
+                # Fallback to goblin green circle
                 center_x = screen_x + self.tile_size // 2
                 center_y = screen_y + self.tile_height // 2
                 # Apply darker colour for fog of war
                 if self._is_tile_explored(self.player.x, self.player.y) and not self._is_tile_visible(self.player.x, self.player.y):
-                    color = self._darken_color((100, 150, 255), 0.7)  # Reduce blue by 30%
+                    color = (30, 100, 30)  # Dimmed goblin green
                 else:
-                    color = (100, 150, 255)  # Normal blue
+                    color = (50, 200, 50)  # Bright goblin green
                 pygame.draw.circle(self.screen, color, (center_x, center_y), self.tile_size // 3)
     
     
     def _get_player_sprite(self) -> str:
-        """Get player sprite - same avatar for all character classes."""
-        return "avatar left"
+        """Get player sprite - warrior sprite for all classes since it looks amazing."""
+        # Add direction suffix based on last movement
+        direction = getattr(self, 'player_direction', 'left')  # Default to left
+        
+        # Use warrior sprite for everyone since it looks the best
+        sprite_name = f"goblin warrior {direction}"
+        
+        # Fallback if directional sprite doesn't exist
+        if not self.sprite_manager.sprite_system.get_sprite(sprite_name):
+            return "goblin warrior"
+        
+        return sprite_name
     
     def _render_enemies(self):
         """Render enemies using sprites."""
@@ -1861,7 +2018,7 @@ class Game:
                     
                     self.sprite_manager.sprite_system.draw_sprite(
                         self.screen, enemy_sprite, screen_x, screen_y, 
-                        scale=1, prevent_overlap=False, tint_color=tint_color
+                        scale=self.zoom_level, prevent_overlap=False, tint_color=tint_color
                     )
                 else:
                     # Fallback to colored circle
@@ -1920,7 +2077,7 @@ class Game:
                     tint_color = self._get_fog_of_war_tint() if not self._is_tile_visible(npc.x, npc.y) else None
                     self.sprite_manager.sprite_system.draw_sprite(
                         self.screen, npc_sprite, screen_x, screen_y, 
-                        scale=1, prevent_overlap=False, tint_color=tint_color
+                        scale=self.zoom_level, prevent_overlap=False, tint_color=tint_color
                     )
                 else:
                     # Fallback to colored circle
@@ -1951,7 +2108,7 @@ class Game:
                     # Draw painted sprite without centering offsets
                     self.sprite_manager.sprite_system.draw_sprite(
                         self.screen, sprite_name, screen_x, screen_y, 
-                        scale=1, prevent_overlap=False, tint_color=tint_color
+                        scale=self.zoom_level, prevent_overlap=False, tint_color=tint_color
                     )
     
     def _get_npc_sprite(self, npc_type: str) -> str:
@@ -2143,12 +2300,53 @@ class Game:
         if not self.player or self.is_dead:
             return
         
+        import time
+        current_time = time.time()
         
         # Convert screen coordinates to tile coordinates
         tile_x, tile_y = self._screen_to_tile_coords(pos[0], pos[1])
         
         # Debug logging
         print(f"DEBUG: Click at screen ({pos[0]}, {pos[1]}) -> tile ({tile_x}, {tile_y})")
+        
+        # Check for double-click
+        is_double_click = False
+        if (self.last_click_pos and 
+            self.last_click_pos == (tile_x, tile_y) and
+            current_time - self.last_mouse_click_time <= self.double_click_time):
+            is_double_click = True
+            print(f"DEBUG: Double-click detected at ({tile_x}, {tile_y})")
+        
+        # Update click tracking
+        self.last_click_pos = (tile_x, tile_y)
+        self.last_mouse_click_time = current_time
+        
+        # Handle double-click on stairs
+        if is_double_click:
+            if self.current_area == GameArea.TOWN:
+                cell = self.town.get_cell(tile_x, tile_y)
+                if cell == CellType.DUNGEON_ENTRANCE:
+                    print("DEBUG: Double-clicked on dungeon entrance - entering dungeon")
+                    self._enter_dungeon()
+                    return
+            elif self.current_area == GameArea.DUNGEON:
+                cell = self.dungeon.get_cell(tile_x, tile_y)
+                if cell == CellType.STAIRCASE:
+                    print("DEBUG: Double-clicked on stairs - going down")
+                    # Move to stairs first if not already there
+                    if (tile_x, tile_y) != (self.player.x, self.player.y):
+                        self.player.x, self.player.y = tile_x, tile_y
+                        self.update_camera()
+                    self._go_down_stairs()
+                    return
+                elif cell == CellType.STAIRCASE:  # All stairs use same type
+                    print("DEBUG: Double-clicked on stairs up - going up")
+                    # Move to stairs first if not already there
+                    if (tile_x, tile_y) != (self.player.x, self.player.y):
+                        self.player.x, self.player.y = tile_x, tile_y
+                        self.update_camera()
+                    self._go_up_stairs()
+                    return
         
         # Check if the click is within valid bounds
         if self.current_area == GameArea.TOWN:
@@ -2177,13 +2375,17 @@ class Game:
         start = (self.player.x, self.player.y)
         target = (tile_x, tile_y)
         
-        # Check if target is walkable and explored
+        # Check if target is walkable and explored (or is stairs/dungeon entrance)
         can_reach_exact_target = False
         if self.current_area == GameArea.TOWN:
-            can_reach_exact_target = (self.town.can_move_to(tile_x, tile_y) and 
+            cell = self.town.get_cell(tile_x, tile_y)
+            can_reach_exact_target = ((self.town.can_move_to(tile_x, tile_y) or 
+                                     cell == CellType.DUNGEON_ENTRANCE) and 
                                     self._is_tile_explored(tile_x, tile_y))
         else:
-            can_reach_exact_target = (self.dungeon.can_move_to(tile_x, tile_y) and 
+            cell = self.dungeon.get_cell(tile_x, tile_y)
+            can_reach_exact_target = ((self.dungeon.can_move_to(tile_x, tile_y) or
+                                     cell == CellType.STAIRCASE) and 
                                     self._is_tile_explored(tile_x, tile_y))
         
         print(f"DEBUG: Target ({tile_x}, {tile_y}) - Walkable: {can_reach_exact_target}")
@@ -2230,12 +2432,19 @@ class Game:
             print(f"DEBUG: Final target ({final_target[0]}, {final_target[1]}) with {path_length} steps")
     
     def _screen_to_tile_coords(self, screen_x, screen_y):
-        """Convert screen coordinates to tile coordinates with improved precision."""
-        # Account for camera offset
-        world_x = screen_x + self.camera_x * self.tile_size
-        world_y = screen_y + self.camera_y * self.tile_height
+        """Convert screen coordinates to tile coordinates with improved precision accounting for zoom."""
+        # The camera position is in tile coordinates, but we need to account for zoom
+        # when converting screen coordinates to world coordinates
         
-        # Convert to tile coordinates with proper rounding for better accuracy
+        # Calculate the offset from camera position in screen pixels
+        camera_offset_x = self.camera_x * self.tile_size
+        camera_offset_y = self.camera_y * self.tile_height
+        
+        # Convert screen coordinates to world coordinates accounting for camera
+        world_x = screen_x + camera_offset_x
+        world_y = screen_y + camera_offset_y
+        
+        # Convert to tile coordinates - the zoomed tile size gives us the correct scaling
         tile_x = round(world_x / self.tile_size)
         tile_y = round(world_y / self.tile_height)
         
@@ -2469,6 +2678,9 @@ class Game:
         enemy.hp -= damage
         enemy.damage_flash = 1.0  # Flash effect
         
+        # Add blood splatter for significant damage
+        self._add_blood_splatter(enemy.x, enemy.y, damage)
+        
         # Combat message
         if is_critical:
             self.add_to_log(f"Critical hit! You deal {damage} damage to {enemy.enemy_type.value}!", (255, 255, 0))
@@ -2479,6 +2691,9 @@ class Game:
         if enemy.hp <= 0:
             enemy.is_alive = False
             self.add_to_log(f"You killed the {enemy.enemy_type.value}!", (100, 255, 100))
+            
+            # Add corpse when enemy dies
+            self._add_corpse(enemy, damage)
             
             # Give experience
             if self.player.character:
@@ -2639,20 +2854,90 @@ class Game:
             self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.NOFRAME)
             self.add_to_log("Fixed window enabled", (100, 255, 100))
     
+    def _zoom_in(self):
+        """Zoom in by increasing the zoom level."""
+        old_zoom = self.zoom_level
+        self.zoom_level = min(self.max_zoom, self.zoom_level + self.zoom_step)
+        if self.zoom_level != old_zoom:
+            self.add_to_log(f"Zoom: {self.zoom_level:.1f}x", (100, 255, 100))
+            # Force camera to recenter on player with new zoom
+            if self.player:
+                self.update_camera()
+    
+    def _zoom_out(self):
+        """Zoom out by decreasing the zoom level."""
+        old_zoom = self.zoom_level
+        self.zoom_level = max(self.min_zoom, self.zoom_level - self.zoom_step)
+        if self.zoom_level != old_zoom:
+            self.add_to_log(f"Zoom: {self.zoom_level:.1f}x", (100, 255, 100))
+            # Force camera to recenter on player with new zoom
+            if self.player:
+                self.update_camera()
+    
+    def _reset_zoom(self):
+        """Reset zoom to default level."""
+        old_zoom = self.zoom_level
+        self.zoom_level = 3.2
+        if self.zoom_level != old_zoom:
+            self.add_to_log("Zoom: Reset to 3.2x", (100, 255, 100))
+            # Force camera to recenter on player with new zoom
+            if self.player:
+                self.update_camera()
+    
+    def _reset_to_no_zoom(self):
+        """Reset zoom to no zoom (1.0x)."""
+        old_zoom = self.zoom_level
+        self.zoom_level = 1.0
+        if self.zoom_level != old_zoom:
+            self.add_to_log("Zoom: Reset to 1.0x (no zoom)", (100, 255, 100))
+            # Force camera to recenter on player with new zoom
+            if self.player:
+                self.update_camera()
+    
+    def _zoom_in_multiple(self, steps: int):
+        """Zoom in multiple steps with modifiers."""
+        for i in range(steps):
+            old_zoom = self.zoom_level
+            self.zoom_level = min(self.max_zoom, self.zoom_level + self.zoom_step)
+            if self.zoom_level == old_zoom:
+                break  # Hit max zoom, stop
+        
+        if self.player:
+            self.update_camera()
+        self.add_to_log(f"Zoom: {self.zoom_level:.1f}x ({steps}x steps)", (100, 255, 100))
+    
+    def _zoom_out_multiple(self, steps: int):
+        """Zoom out multiple steps with modifiers."""
+        for i in range(steps):
+            old_zoom = self.zoom_level
+            self.zoom_level = max(self.min_zoom, self.zoom_level - self.zoom_step)
+            if self.zoom_level == old_zoom:
+                break  # Hit min zoom, stop
+        
+        if self.player:
+            self.update_camera()
+        self.add_to_log(f"Zoom: {self.zoom_level:.1f}x ({steps}x steps)", (100, 255, 100))
+    
+    def _wait_multiple_turns(self, turns: int):
+        """Wait multiple turns with modifiers."""
+        if turns == 1:
+            self.add_to_log("You wait...", (200, 200, 200))
+        else:
+            self.add_to_log(f"You wait {turns} turns...", (200, 200, 200))
+    
     def _handle_window_resize(self, event):
         """Handle window resize events."""
         if event.type == pygame.VIDEORESIZE:
             self.window_width = event.w
             self.window_height = event.h
             self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.RESIZABLE)
-            self.update_camera()
             
-            # Update state manager if it exists
+            # Update state manager with new screen and handle resize
             if hasattr(self, 'state_manager') and self.state_manager:
                 self.state_manager.screen = self.screen
-                if hasattr(self.state_manager, 'original_background') and self.state_manager.original_background:
-                    self.state_manager._resize_background()
+                self.state_manager.handle_resize(event)
             
+            self.update_camera()
             self.add_to_log(f"Window resized to {self.window_width}x{self.window_height}", (100, 255, 100))
     
     def _restart_game(self):
@@ -2733,6 +3018,20 @@ class Game:
         char = self.player.character
         from system.character_system import StatType
         
+        # Get modifier states for universal modifiers
+        keys = pygame.key.get_pressed()
+        ctrl_held = keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]
+        shift_held = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
+        
+        # Calculate universal modifier multiplier
+        modifier = 1
+        if ctrl_held and shift_held:
+            modifier = 100  # Ctrl+Shift = +100
+        elif shift_held:
+            modifier = 10   # Shift = +10
+        elif ctrl_held:
+            modifier = 5    # Ctrl = +5
+        
         # Close popup
         if key == pygame.K_s:
             self.skill_popup_open = False
@@ -2752,11 +3051,11 @@ class Game:
         elif key == pygame.K_5:
             self.selected_stat = 4  # MANA
         
-        # Allocate/deallocate points
+        # Allocate/deallocate points (with modifiers)
         if key == pygame.K_PLUS or key == pygame.K_KP_PLUS:
-            self._allocate_attribute_point(1)
+            self._allocate_attribute_point(modifier)
         elif key == pygame.K_MINUS or key == pygame.K_KP_MINUS:
-            self._allocate_attribute_point(-1)
+            self._allocate_attribute_point(-modifier)
     
     def _allocate_attribute_point(self, amount):
         """Allocate or deallocate attribute points."""
@@ -3395,6 +3694,260 @@ class Game:
         instruction_text = self.small_font.render("Press SPACE to resume", True, (200, 200, 200))
         instruction_rect = instruction_text.get_rect(center=(self.screen.get_width() // 2, self.screen.get_height() // 2 + 20))
         self.screen.blit(instruction_text, instruction_rect)
+    
+    def _set_gameplay_clip(self):
+        """Set clipping area to gameplay region only (above bottom border and XP bar)."""
+        # Account for both the 60px bottom border and the 12px XP bar
+        gameplay_height = self.screen.get_height() - 60 - 12
+        clip_rect = pygame.Rect(0, 0, self.screen.get_width(), gameplay_height)
+        self.screen.set_clip(clip_rect)
+    
+    def _clear_gameplay_clip(self):
+        """Clear clipping area to allow drawing anywhere on screen."""
+        self.screen.set_clip(None)
+    
+    def _add_blood_splatter(self, x: int, y: int, damage: int):
+        """Add blood splatter at the given location based on damage amount."""
+        import random
+        
+        # Only add blood for significant damage (3+ damage)
+        if damage < 3:
+            return
+        
+        # Check if this tile already has blood splatters (max 2 per tile)
+        existing_splatters = []
+        for key in self.blood_splatters.keys():
+            if len(key) >= 2 and key[0] == x and key[1] == y:
+                existing_splatters.append(key)
+        
+        if len(existing_splatters) >= 2:
+            return  # Don't add more blood to this tile
+        
+        # Calculate intensity based on damage (cap at 20 damage for max intensity)
+        intensity = min(damage / 20.0, 1.0)
+        
+        # Select random blood/gore sprite from the actual sprite names
+        blood_sprites = [
+            "Blood1", "blood2", "blood3", "blood4", "blood5", 
+            "blood6", "blood7", "blood8", "blood9", "blood10", "gore1"
+        ]
+        blood_sprite = random.choice(blood_sprites)
+        
+        # Debug: Check if sprite exists in sprite system
+        sprite_exists = self.sprite_manager.sprite_system.get_sprite(blood_sprite) is not None
+        print(f"DEBUG: Selected blood sprite '{blood_sprite}' - exists: {sprite_exists}")
+        
+        # Debug: List all blood-related sprites (only once)
+        if not hasattr(self, '_blood_sprites_listed'):
+            self._blood_sprites_listed = True
+            all_sprites = self.sprite_manager.sprite_system.list_sprites()
+            blood_related = [s for s in all_sprites if 'blood' in s.lower() or 'Blood' in s]
+            print(f"DEBUG: Available blood-related sprites: {blood_related}")
+        
+        # Create a unique key for multiple splatters on the same tile
+        splatter_id = len(existing_splatters)  # 0 or 1
+        tile_key = (x, y, splatter_id)
+        
+        # Add small random offset for second splatter to avoid perfect overlap
+        offset_x = random.randint(-4, 4) if splatter_id == 1 else 0
+        offset_y = random.randint(-4, 4) if splatter_id == 1 else 0
+        
+        # Add blood splatter to the location
+        self.blood_splatters[tile_key] = {
+            'intensity': intensity,
+            'sprite': blood_sprite,
+            'x': x,
+            'y': y,
+            'offset_x': offset_x,
+            'offset_y': offset_y
+        }
+        
+        print(f"DEBUG: Added blood splatter at ({x}, {y}) splatter {splatter_id} with intensity {intensity:.2f}, sprite: '{blood_sprite}'")
+        
+        # 50% chance to add blood splatter to adjacent tiles for more coverage
+        if random.random() < 0.5:
+            # Pick a random adjacent tile
+            adjacent_offsets = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)]
+            adj_dx, adj_dy = random.choice(adjacent_offsets)
+            adj_x, adj_y = x + adj_dx, y + adj_dy
+            
+            # Check if adjacent tile is valid and walkable
+            if self.current_area == GameArea.TOWN:
+                if (0 <= adj_x < self.town.width and 0 <= adj_y < self.town.height and
+                    self.town.is_walkable(adj_x, adj_y)):
+                    # Add smaller blood splatter to adjacent tile (reduced intensity)
+                    self._add_blood_splatter_direct(adj_x, adj_y, max(1, damage // 2))
+            elif self.current_area == GameArea.DUNGEON and self.dungeon:
+                if (0 <= adj_x < self.dungeon.width and 0 <= adj_y < self.dungeon.height and
+                    self.dungeon.grid[adj_y][adj_x].name.startswith('FLOOR')):
+                    # Add smaller blood splatter to adjacent tile (reduced intensity)
+                    self._add_blood_splatter_direct(adj_x, adj_y, max(1, damage // 2))
+    
+    def _add_blood_splatter_direct(self, x: int, y: int, damage: int):
+        """Add blood splatter directly without chain reactions (for adjacent tiles)."""
+        import random
+        
+        # Only add blood for damage 1+
+        if damage < 1:
+            return
+        
+        # Check if this tile already has blood splatters (max 2 per tile)
+        existing_splatters = []
+        for key in self.blood_splatters.keys():
+            if len(key) >= 2 and key[0] == x and key[1] == y:
+                existing_splatters.append(key)
+        
+        if len(existing_splatters) >= 2:
+            return  # Don't add more blood to this tile
+        
+        # Calculate intensity based on damage (cap at 20 damage for max intensity)
+        intensity = min(damage / 20.0, 1.0)
+        
+        # Select random blood/gore sprite from the actual sprite names
+        blood_sprites = [
+            "Blood1", "blood2", "blood3", "blood4", "blood5", 
+            "blood6", "blood7", "blood8", "blood9", "blood10", "gore1"
+        ]
+        blood_sprite = random.choice(blood_sprites)
+        
+        # Create a unique key for multiple splatters on the same tile
+        splatter_id = len(existing_splatters)  # 0 or 1
+        tile_key = (x, y, splatter_id)
+        
+        # Add small random offset for second splatter to avoid perfect overlap
+        offset_x = random.randint(-4, 4) if splatter_id == 1 else 0
+        offset_y = random.randint(-4, 4) if splatter_id == 1 else 0
+        
+        # Add blood splatter to the location
+        self.blood_splatters[tile_key] = {
+            'intensity': intensity,
+            'sprite': blood_sprite,
+            'x': x,
+            'y': y,
+            'offset_x': offset_x,
+            'offset_y': offset_y
+        }
+        
+        print(f"DEBUG: Added adjacent blood splatter at ({x}, {y}) splatter {splatter_id} with intensity {intensity:.2f}, sprite: '{blood_sprite}'")
+    
+    def _add_corpse(self, enemy, damage: int):
+        """Add a corpse when an enemy dies, retaining enemy data."""
+        import random
+        
+        x, y = enemy.x, enemy.y
+        
+        # Select corpse sprite based on enemy type or use generic
+        corpse_sprite = self._get_corpse_sprite(enemy.enemy_type)
+        
+        # Store corpse data
+        self.corpses[(x, y)] = {
+            'enemy_data': enemy,  # Full enemy data for necromancers
+            'sprite': corpse_sprite,
+            'decay_time': 0.0  # Could be used for corpse decay
+        }
+        
+        # Also add heavy blood splatter where they died
+        self._add_blood_splatter(x, y, damage + 10)  # Extra blood for death
+        
+        print(f"DEBUG: Added corpse at ({x}, {y}): {enemy.enemy_type.name}, sprite: {corpse_sprite}")
+    
+    def _get_corpse_sprite(self, enemy_type):
+        """Get appropriate corpse sprite for enemy type."""
+        # Just use gore1 for all corpses - simple and effective
+        return "gore1"
+    
+    def _render_blood_and_corpses(self):
+        """Render blood splatters and corpses with fog of war support."""
+        gameplay_height = self.screen.get_height() - 60
+        
+        # Render blood splatters first (underneath corpses)
+        for tile_key, blood_data in self.blood_splatters.items():
+            x, y = blood_data['x'], blood_data['y']
+            
+            # Only render if tile is visible or explored
+            if not (self._is_tile_visible(x, y) or self._is_tile_explored(x, y)):
+                continue
+            
+            screen_x = (x - self.camera_x) * self.tile_size
+            screen_y = (y - self.camera_y) * self.tile_height
+            
+            # Check if on screen
+            if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+                screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
+                
+                # Get blood sprite
+                blood_sprite = blood_data['sprite']
+                intensity = blood_data['intensity']
+                
+                # Apply fog of war tinting
+                tint_color = None
+                if self._is_tile_explored(x, y) and not self._is_tile_visible(x, y):
+                    # Darken blood in fog of war
+                    tint_color = self._get_fog_of_war_tint()
+                
+                # Try to render blood sprite
+                sprite_found = self.sprite_manager.sprite_system.get_sprite(blood_sprite)
+                if blood_sprite and sprite_found:
+                    # Make blood BLOOD RED
+                    blood_red_tint = (1.0, 0.1, 0.1) if not tint_color else (0.4, 0.04, 0.04)
+                    
+                    # Use stored offset for consistent positioning
+                    offset_x = blood_data.get('offset_x', 0)
+                    offset_y = blood_data.get('offset_y', 0)
+                    
+                    self.sprite_manager.sprite_system.draw_sprite(
+                        self.screen, blood_sprite, screen_x + offset_x, screen_y + offset_y,
+                        scale=self.zoom_level, prevent_overlap=False, tint_color=blood_red_tint
+                    )
+                    # Blood rendered successfully (debug disabled to reduce spam)
+                elif blood_sprite:
+                    print(f"DEBUG: MISSING BLOOD SPRITE: '{blood_sprite}' not found in sprite system at ({x}, {y})")
+                    # Fallback to bright magenta circle for missing sprite
+                    center_x = screen_x + self.tile_size // 2 + blood_data.get('offset_x', 0)
+                    center_y = screen_y + self.tile_height // 2 + blood_data.get('offset_y', 0)
+                    radius = max(3, int(self.tile_size * intensity * 0.4))
+                    magenta_color = (255, 0, 255)  # Bright magenta for missing sprite
+                    pygame.draw.circle(self.screen, magenta_color, (center_x, center_y), radius)
+                else:
+                    # Fallback to red circle for blood
+                    center_x = screen_x + self.tile_size // 2
+                    center_y = screen_y + self.tile_height // 2
+                    radius = max(2, int(self.tile_size * intensity * 0.3))
+                    blood_color = (150, 0, 0) if not tint_color else (60, 0, 0)
+                    pygame.draw.circle(self.screen, blood_color, (center_x, center_y), radius)
+        
+        # Render corpses on top of blood
+        for (x, y), corpse_data in self.corpses.items():
+            # Only render if tile is visible or explored
+            if not (self._is_tile_visible(x, y) or self._is_tile_explored(x, y)):
+                continue
+            
+            screen_x = (x - self.camera_x) * self.tile_size
+            screen_y = (y - self.camera_y) * self.tile_height
+            
+            # Check if on screen
+            if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+                screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
+                
+                corpse_sprite = corpse_data['sprite']
+                
+                # Apply fog of war tinting
+                tint_color = None
+                if self._is_tile_explored(x, y) and not self._is_tile_visible(x, y):
+                    tint_color = self._get_fog_of_war_tint()
+                
+                # Try to render corpse sprite
+                sprite_found = self.sprite_manager.sprite_system.get_sprite(corpse_sprite)
+                if corpse_sprite and sprite_found:
+                    self.sprite_manager.sprite_system.draw_sprite(
+                        self.screen, corpse_sprite, screen_x, screen_y,
+                        scale=self.zoom_level, prevent_overlap=False, tint_color=tint_color
+                    )
+                    # Corpse rendered successfully (debug disabled to reduce spam)
+                else:
+                    print(f"DEBUG: MISSING CORPSE SPRITE: '{corpse_sprite}' not found - using blood instead")
+                    # Instead of drawing a corpse, add extra blood splatters for dramatic effect
+                    self._add_blood_splatter_direct(x, y, 15)  # Heavy blood where body is
     
     def _render_skill_popup(self):
         """Render skill point allocation popup."""

@@ -143,6 +143,12 @@ class SpriteSystem:
         """Draw a sprite to a surface with optional overlap prevention"""
         sprite = self.get_sprite(sprite_name, tint_color)
         if sprite is None:
+            # Draw bright magenta square for missing sprites
+            print(f"WARNING: Missing sprite '{sprite_name}' - drawing magenta placeholder")
+            tile_width = int(self.tile_size[0] * scale)
+            tile_height = int(self.tile_size[1] * scale)
+            magenta_rect = pygame.Rect(x, y, tile_width, tile_height)
+            pygame.draw.rect(surface, (255, 0, 255), magenta_rect)  # Bright magenta
             return False
             
         if scale != 1:

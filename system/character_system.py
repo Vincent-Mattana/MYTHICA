@@ -417,8 +417,8 @@ class Character:
     
     def take_damage(self, damage: int) -> bool:
         """Apply damage to character. Returns True if character dies."""
-        # God mode: no damage taken
-        if self.god_mode:
+        # God mode: no damage taken at all
+        if hasattr(self, 'god_mode') and self.god_mode:
             return False
         
         # Apply damage reduction from perks
@@ -432,11 +432,8 @@ class Character:
         # Ensure minimum 1 damage
         final_damage = max(1, damage - int(damage_reduction))
         
-        # In god mode, HP can't go below 1
-        if self.god_mode:
-            self.current_hp = max(1, self.current_hp - final_damage)
-        else:
-            self.current_hp = max(0, self.current_hp - final_damage)
+        # Apply damage to HP
+        self.current_hp = max(0, self.current_hp - final_damage)
         self.last_damage_time = 0
         return self.current_hp <= 0
     
