@@ -1,2420 +1,197 @@
 #!/usr/bin/env python3
 """
-Mythica - A Grid-Based Dungeon Crawler
-A procedurally generated dungeon exploration game with minimap.
+Mythica Dungeon Crawler - Main Game
+A town-to-dungeon adventure game using the sprite system.
 """
 
 import pygame
 import sys
-import time
-from typing import Tuple, List, Set
-from enum import Enum
 import random
 import math
-from logic import (
-    Character, CharacterStats, Equipment, StatType, EquipmentSlot,
-    PerkSystem, CharacterPerks,
-    Enemy, EnemyManager, EnemyType,
-    TurnManager, ActionCosts, ActionType,
-    GameStateManager, CharacterClassData, CharacterClass,
-    ConfigManager,
-    InteractiveCharacterScreen, Inventory, InventoryAction,
-    sprite_manager, SpriteType,
-    SpriteFont
+import json
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Set
+from enum import Enum
+
+# Import game systems
+from system import (
+    Character, CharacterStats, StatType, EquipmentSlot, ItemType, Equipment,
+    Enemy, EnemyManager, EnemyType, 
+    GameStateManager, GameState, CharacterClass,
+    TurnManager, ActionType, ActionCosts,
+    SpriteFont, GameSpriteManager
 )
-from logic.config_manager import config
-from logic.game_states import GameState
-from logic.enemy_system import HealthBar
 
-# Initialize pygame
-pygame.init()
-
-# Constants
-WINDOW_WIDTH = 1024
-WINDOW_HEIGHT = 768
-SIDEBAR_WIDTH = 250  # Width of the right sidebar
-GAME_AREA_WIDTH = WINDOW_WIDTH - SIDEBAR_WIDTH  # Game area takes remaining width
-GRID_SIZE = 24  # Match Oryx sprite size
-DUNGEON_WIDTH = 50
-DUNGEON_HEIGHT = 50
-VIEWPORT_WIDTH = GAME_AREA_WIDTH // GRID_SIZE  # Viewport fits in game area
-VIEWPORT_HEIGHT = WINDOW_HEIGHT // GRID_SIZE   # Full height for game area
-MINIMAP_SIZE = 200
-FPS = 60
-
-# Colours (UK spelling as requested)
-BLACK = (0, 0, 0)
-WHITE = (255, 255, 255)
-GREY = (128, 128, 128)
-DARK_GREY = (64, 64, 64)
-BROWN = (139, 69, 19)
-BLUE = (0, 100, 200)
-GREEN = (0, 200, 0)
-RED = (200, 0, 0)
-YELLOW = (255, 255, 0)
+# Suppress pygame welcome message
+import os
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 
 class CellType(Enum):
+    """Types of cells in the game world."""
     WALL = 0
     FLOOR = 1
     DOOR = 2
     STAIRCASE = 3
     CHEST = 4
     HP_PICKUP = 5
-    WATER = 6
-    ITEM = 7  # For items dropped on ground
+    TOWN_FLOOR = 6
+    TOWN_WALL = 7
+    TOWN_DOOR = 8
+    TOWN_BUILDING = 9
+    DUNGEON_ENTRANCE = 10
 
-class Direction(Enum):
-    NORTH = (0, -1)
-    SOUTH = (0, 1)
-    EAST = (1, 0)
-    WEST = (-1, 0)
-    NORTHWEST = (-1, -1)
-    NORTHEAST = (1, -1)
-    SOUTHWEST = (-1, 1)
-    SOUTHEAST = (1, 1)
+class GameArea(Enum):
+    """Different areas of the game world."""
+    TOWN = "town"
+    DUNGEON = "dungeon"
 
-class LineOfSight:
-    @staticmethod
-    def get_visible_tiles(player_x: int, player_y: int, dungeon: 'Dungeon', 
-                         sight_range: int = 8) -> Set[Tuple[int, int]]:
-        """Calculate which tiles are visible from the player's position using raycasting."""
-        visible = set()
-        visible.add((player_x, player_y))  # Player can always see their own tile
-        
-        # Cast rays in a circle around the player
-        num_rays = 360  # One ray per degree for smooth visibility
-        
-        for i in range(num_rays):
-            angle = (i * 2 * math.pi) / num_rays
-            dx = math.cos(angle)
-            dy = math.sin(angle)
-            
-            # Cast ray from player position
-            for step in range(1, sight_range + 1):
-                ray_x = player_x + dx * step
-                ray_y = player_y + dy * step
-                
-                # Round to get grid coordinates
-                grid_x = int(round(ray_x))
-                grid_y = int(round(ray_y))
-                
-                # Check bounds
-                if (grid_x < 0 or grid_x >= dungeon.width or 
-                    grid_y < 0 or grid_y >= dungeon.height):
-                    break
-                
-                # Add tile to visible set
-                visible.add((grid_x, grid_y))
-                
-                # Stop if we hit a wall
-                if dungeon.get_cell(grid_x, grid_y) == CellType.WALL:
-                    break
-        
-        return visible
+class NPC:
+    """Represents a non-player character in the town."""
     
-    @staticmethod
-    def bresenham_line(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
-        """Generate points along a line using Bresenham's algorithm."""
-        points = []
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        
-        x, y = x0, y0
-        x_inc = 1 if x1 > x0 else -1
-        y_inc = 1 if y1 > y0 else -1
-        
-        error = dx - dy
-        
-        while True:
-            points.append((x, y))
-            
-            if x == x1 and y == y1:
-                break
-                
-            error2 = 2 * error
-            
-            if error2 > -dy:
-                error -= dy
-                x += x_inc
-                
-            if error2 < dx:
-                error += dx
-                y += y_inc
-        
-        return points
-
-class Game:
-    def __init__(self):
-        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-        pygame.display.set_caption("Mythica - Dungeon Crawler")
-        self.clock = pygame.time.Clock()
-        self.running = True
-        
-        # Game state management
-        self.state_manager = GameStateManager(self.screen)
-        
-        # Game components (initialized when starting a game)
-        self.dungeon = None
-        self.player = None
-        self.camera = None
-        self.minimap = None
-        self.enemy_manager = None
-        
-        # Load character portraits
-        self.class_portraits = {}
-        portrait_sheet = pygame.image.load(str(sprite_manager.assets_path / "oryx_roguelike_2.0" / "oryx_roguelike_2.0" / "Interface_Portraits.png")).convert_alpha()
-        # Portrait positions in the sheet (x, y)
-        portrait_positions = {
-            CharacterClass.WARRIOR: (0, 0),    # First portrait - warrior
-            CharacterClass.ROGUE: (48, 0),     # Second portrait - rogue/thief
-            CharacterClass.MAGE: (96, 0),      # Third portrait - mage/wizard
-            CharacterClass.RANGER: (144, 0),   # Fourth portrait - ranger/archer
-            CharacterClass.CLERIC: (192, 0)    # Fifth portrait - cleric/priest
-        }
-        for char_class, pos in portrait_positions.items():
-            portrait = pygame.Surface((48, 48), pygame.SRCALPHA)
-            portrait.blit(portrait_sheet, (0, 0), (pos[0], pos[1], 48, 48))
-            self.class_portraits[char_class] = portrait
-            
-        # Load and cache the slash sprite
-        self.slash_sprite = pygame.image.load(str(sprite_manager.assets_path / "Classic Roguelike" / "classic_roguelike_sliced" / "classic_roguelike_134.png")).convert_alpha()
-        
-        # Game state
-        self.explored = set()  # All tiles the player has ever seen
-        self.visible = set()   # Currently visible tiles
-        self.los = LineOfSight()
-        self.game_start_time = time.time()
-        
-        # Turn-based system
-        self.turn_manager = TurnManager()
-        
-        # UI state
-        self.show_character_sheet = False
-        self.player_is_dead = False
-        
-        # Interactive character screen/inventory
-        self.interactive_character_screen = InteractiveCharacterScreen(WINDOW_WIDTH, WINDOW_HEIGHT)
-        self.show_interactive_inventory = False
-        
-        # Continuous movement state
-        self.movement_timer = 0  # Timer to control movement speed when holding keys
-        self.movement_delay = config.get_float_setting('Game', 'continuous_movement_delay', 0.15)  # Seconds between movements when holding key
-        self.key_hold_start_time = {}  # Track when keys were first pressed
-        self.continuous_hold_delay = config.get_float_setting('Game', 'continuous_hold_delay', 0.3)  # How long to hold before continuous movement starts
-        self.last_manual_move_time = 0  # Track manual moves to prevent overlap
-        
-        # Auto-explore state
-        self.auto_explore_active = False
-        self.auto_explore_path = []  # Queue of positions to move to
-        
-        # Level navigation state
-        self.level_history = {}  # Store dungeon states for each level
-        self.current_level = 1
-        
-        # Treasure and pickup system
-        self.chests = {}  # {(x, y): {'opened': bool, 'contents': [items]}}
-        self.hp_pickups = set()  # {(x, y)} - positions of HP pickups
-        
-        # Game log for sidebar
-        self.game_log = []
-        self.max_log_entries = 8  # Number of log entries to show in sidebar
-    
-    def add_to_log(self, message: str, color: Tuple[int, int, int] = WHITE):
-        """Add a message to the game log."""
-        self.game_log.append((message, color))
-        # Keep only the most recent entries
-        if len(self.game_log) > self.max_log_entries:
-            self.game_log.pop(0)
-        
-    def handle_events(self):
-        mouse_pos = pygame.mouse.get_pos()
-        
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.running = False
-            elif event.type == pygame.KEYDOWN:
-                # Special case for F5 - reload config
-                if event.key == pygame.K_F5:
-                    config.reload_config()
-                    print("Configuration reloaded!")
-                elif self.state_manager.current_state == GameState.PLAYING:
-                    # Check if interactive inventory is open
-                    if self.show_interactive_inventory:
-                        if (config.is_key_pressed_for_action('quit_game', event.key) or 
-                            config.is_key_pressed_for_action('inventory', event.key)):
-                            self.show_interactive_inventory = False
-                    else:
-                        self.handle_player_input(event.key)
-                else:
-                    # Handle menu/game over input
-                    continue_game, character = self.state_manager.handle_input(event)
-                    if not continue_game:
-                        self.running = False
-                    elif character:
-                        self.start_new_game(character)
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                # Handle mouse clicks for interactive inventory
-                if (self.state_manager.current_state == GameState.PLAYING and 
-                    self.show_interactive_inventory and self.player):
-                    message = self.interactive_character_screen.handle_mouse_click(
-                        event.pos, self.player.character, self.player.character.inventory)
-                    if message:
-                        self.add_to_log(message, WHITE)
-            elif event.type == pygame.MOUSEMOTION:
-                # Handle mouse hover for tooltips
-                if (self.state_manager.current_state == GameState.PLAYING and 
-                    self.show_interactive_inventory and self.player):
-                    self.interactive_character_screen.handle_mouse_hover(
-                        event.pos, self.player.character, self.player.character.inventory)
-    
-    def handle_player_input(self, key):
-        # Check for special actions first
-        if config.is_key_pressed_for_action('character_sheet', key):
-            self.show_character_sheet = not self.show_character_sheet
-            if self.show_character_sheet:
-                self.show_interactive_inventory = False  # Close inventory if open
-            return
-        
-        if config.is_key_pressed_for_action('inventory', key):
-            self.show_interactive_inventory = not self.show_interactive_inventory
-            if self.show_interactive_inventory:
-                self.show_character_sheet = False  # Close old sheet if open
-            return
-        
-        if config.is_key_pressed_for_action('quit_game', key):
-            self.running = False
-            return
-        
-        if config.is_key_pressed_for_action('wait_turn', key):
-            # Wait/rest turn  
-            if not self.player_is_dead and self.turn_manager.can_player_act():
-                dexterity = self.player.character.stats.get_total_stat(StatType.DEXTERITY)
-                self.turn_manager.schedule_player_action(ActionType.WAIT, dexterity=dexterity)
-                print("Waiting...")
-            return
-        
-        if config.is_key_pressed_for_action('auto_explore', key):
-            # Toggle auto-explore
-            if not self.player_is_dead:
-                self.toggle_auto_explore()
-            return
-        
-        if config.is_key_pressed_for_action('go_down_stairs', key):
-            # Go down stairs
-            print("']' key pressed - attempting to go down stairs")
-            if not self.player_is_dead:
-                self.handle_stair_navigation('down')
-            return
-        
-        if config.is_key_pressed_for_action('go_up_stairs', key):
-            # Go up stairs
-            print("'[' key pressed - attempting to go up stairs")
-            if not self.player_is_dead:
-                self.handle_stair_navigation('up')
-            return
-        
-        # Check for movement
-        dx, dy = config.get_movement_direction(key)
-        
-        if dx != 0 or dy != 0:
-            if self.player_is_dead or not self.turn_manager.can_player_act():
-                return  # Player cannot act yet or is dead
-            
-            # Record this as a manual move to prevent continuous movement overlap
-            import time
-            self.last_manual_move_time = time.time()
-            
-            # Cancel auto-explore on manual movement
-            if self.auto_explore_active:
-                self.auto_explore_active = False
-                self.auto_explore_path = []
-                self.add_to_log("Auto-explore cancelled", WHITE)
-                
-            new_x = self.player.x + dx
-            new_y = self.player.y + dy
-            
-            # Check if the target position is a valid floor tile
-            if not self.dungeon.can_move_to(new_x, new_y):
-                return  # Can't move into walls
-            
-            # Check for enemy at target position
-            enemy_at_target = self.enemy_manager.get_enemy_at(new_x, new_y)
-            if enemy_at_target and enemy_at_target.is_alive:
-                # Combat! Schedule attack action
-                dexterity = self.player.character.stats.get_total_stat(StatType.DEXTERITY)
-                self.turn_manager.schedule_player_action(
-                    ActionType.ATTACK, 
-                    target_pos=(new_x, new_y),
-                    target_id=f"enemy_{enemy_at_target.x}_{enemy_at_target.y}",
-                    dexterity=dexterity
-                )
-            else:
-                # Schedule movement action
-                dexterity = self.player.character.stats.get_total_stat(StatType.DEXTERITY)
-                self.turn_manager.schedule_player_action(
-                    ActionType.MOVE, 
-                    target_pos=(new_x, new_y),
-                    dexterity=dexterity
-                )
-    
-    def update(self):
-        # Only update game logic when actually playing
-        if self.state_manager.current_state == GameState.PLAYING and self.player:
-            # Process continuous movement from held keys
-            self.process_continuous_movement()
-            
-            # Process auto-explore if active
-            self.process_auto_explore()
-            
-            # Process turn-based actions
-            self.process_turn_actions()
-            
-            # Update camera to follow player
-            self.camera.update(self.player.x, self.player.y)
-            
-            # Update minimap with new explored areas and visibility
-            self.minimap.update_explored(self.explored)
-            self.minimap.update_visible(self.visible)
-    
-    def update_visibility(self):
-        """Update what tiles are currently visible and add to explored set."""
-        sight_range = self.player.get_sight_range()
-        self.visible = self.los.get_visible_tiles(
-            self.player.x, self.player.y, self.dungeon, sight_range
-        )
-        # Add all visible tiles to the explored set
-        self.explored.update(self.visible)
-    
-    def process_continuous_movement(self):
-        """Process movement when direction keys are held down for a sustained period."""
-        # Skip if player is dead, inventory is open, or can't act
-        if (self.player_is_dead or 
-            self.show_interactive_inventory or 
-            not self.turn_manager.can_player_act()):
-            return
-        
-        # Skip if auto-explore is active (let auto-explore handle movement)
-        if self.auto_explore_active:
-            return
-        
-        import time
-        current_time = time.time()
-        
-        # Don't do continuous movement too soon after a manual move
-        if current_time - self.last_manual_move_time < 0.1:
-            return
-        
-        # Update movement timer
-        if current_time - self.movement_timer < self.movement_delay:
-            return  # Not enough time has passed for next movement
-        
-        # Check for held keys
-        keys = pygame.key.get_pressed()
-        
-        # Track key hold times and find currently pressed movement keys
-        currently_held_actions = []
-        for direction_action in ['move_north', 'move_south', 'move_west', 'move_east',
-                               'move_northwest', 'move_northeast', 'move_southwest', 'move_southeast']:
-            if config.is_action_currently_pressed(direction_action, keys):
-                # Key is currently pressed
-                if direction_action not in self.key_hold_start_time:
-                    # Key just started being pressed
-                    self.key_hold_start_time[direction_action] = current_time
-                elif current_time - self.key_hold_start_time[direction_action] >= self.continuous_hold_delay:
-                    # Key has been held long enough for continuous movement
-                    currently_held_actions.append(direction_action)
-            else:
-                # Key is not pressed, remove from tracking
-                if direction_action in self.key_hold_start_time:
-                    del self.key_hold_start_time[direction_action]
-        
-        # Only proceed if we have keys held long enough for continuous movement
-        if not currently_held_actions:
-            return
-        
-        # Calculate movement direction from held keys
-        dx, dy = 0, 0
-        for direction_action in currently_held_actions:
-            movement_dx, movement_dy = config.get_movement_direction_for_action(direction_action)
-            dx += movement_dx
-            dy += movement_dy
-        
-        if dx != 0 or dy != 0:
-            # Normalize diagonal movement (prevent faster diagonal movement)
-            if abs(dx) > 1:
-                dx = 1 if dx > 0 else -1
-            if abs(dy) > 1:
-                dy = 1 if dy > 0 else -1
-            
-            new_x = self.player.x + dx
-            new_y = self.player.y + dy
-            
-            # Check if the target position is a valid floor tile
-            if not self.dungeon.can_move_to(new_x, new_y):
-                return  # Can't move into walls
-            
-            # Check for enemy at target position
-            enemy_at_target = self.enemy_manager.get_enemy_at(new_x, new_y)
-            if enemy_at_target and enemy_at_target.is_alive:
-                # Combat! Schedule attack action
-                dexterity = self.player.character.stats.get_total_stat(StatType.DEXTERITY)
-                self.turn_manager.schedule_player_action(
-                    ActionType.ATTACK, 
-                    target_pos=(new_x, new_y),
-                    target_id=f"enemy_{enemy_at_target.x}_{enemy_at_target.y}",
-                    dexterity=dexterity
-                )
-            else:
-                # Schedule movement action
-                dexterity = self.player.character.stats.get_total_stat(StatType.DEXTERITY)
-                self.turn_manager.schedule_player_action(
-                    ActionType.MOVE, 
-                    target_pos=(new_x, new_y),
-                    dexterity=dexterity
-                )
-            
-            # Update movement timer to prevent moving too fast
-            self.movement_timer = current_time
-    
-    def toggle_auto_explore(self):
-        """Toggle auto-explore mode on/off."""
-        if self.auto_explore_active:
-            self.auto_explore_active = False
-            self.auto_explore_path = []
-            self.add_to_log("Auto-explore disabled", WHITE)
-            print("Auto-explore disabled")
-        else:
-            # Check if there are enemies visible
-            if self.are_enemies_visible():
-                self.add_to_log("Cannot auto-explore: enemies nearby!", RED)
-                print("Cannot auto-explore: enemies visible")
-                return
-            
-            self.auto_explore_active = True
-            self.auto_explore_path = []
-            self.add_to_log("Auto-explore enabled", BLUE)
-            print("Auto-explore enabled")
-    
-    def are_enemies_visible(self) -> bool:
-        """Check if any living enemies are currently visible."""
-        for enemy in self.enemy_manager.get_living_enemies():
-            if (enemy.x, enemy.y) in self.visible:
-                return True
-        return False
-    
-    def find_nearest_unexplored_area(self) -> Tuple[int, int]:
-        """Find the nearest unexplored walkable tile using BFS."""
-        from collections import deque
-        
-        start_x, start_y = self.player.x, self.player.y
-        queue = deque([(start_x, start_y, 0)])  # (x, y, distance)
-        visited = {(start_x, start_y)}
-        
-        # Only use orthogonal directions
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-        
-        # Track the closest unexplored tile we've found
-        closest_target = None
-        closest_dist = float('inf')
-        
-        while queue and (closest_target is None or queue[0][2] < closest_dist):
-            x, y, dist = queue.popleft()
-            
-            # Check each direction from current position
-            for dx, dy in directions:
-                new_x, new_y = x + dx, y + dy
-                
-                # Skip if out of bounds
-                if (new_x < 0 or new_x >= self.dungeon.width or 
-                    new_y < 0 or new_y >= self.dungeon.height):
-                    continue
-                    
-                # Skip if already visited
-                if (new_x, new_y) in visited:
-                    continue
-                    
-                # Skip if not walkable
-                if not self.dungeon.can_move_to(new_x, new_y):
-                    continue
-                    
-                visited.add((new_x, new_y))
-                
-                # If this tile is unexplored and closer than our current best
-                if (new_x, new_y) not in self.explored and dist < closest_dist:
-                    # Found a closer unexplored tile
-                    closest_target = (new_x, new_y)
-                    closest_dist = dist
-                
-                # Only add to queue if we haven't found a target or this path might lead to a closer one
-                if dist + 1 < closest_dist:
-                    queue.append((new_x, new_y, dist + 1))
-        
-        return closest_target
-    
-    def find_path_to_target(self, target_x: int, target_y: int) -> List[Tuple[int, int]]:
-        """Find shortest path to target using optimized A* pathfinding."""
-        import heapq
-        
-        start_x, start_y = self.player.x, self.player.y
-        
-        # If we're already at the target, no path needed
-        if start_x == target_x and start_y == target_y:
-            return []
-        
-        # Priority queue: (f_score, x, y)
-        open_set = [(0, start_x, start_y)]
-        # Keep track of where we came from and the g_scores
-        came_from = {}
-        g_scores = {(start_x, start_y): 0}
-        
-        # Only use orthogonal directions for faster pathfinding
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-        
-        def heuristic(x1: int, y1: int) -> int:
-            """Manhattan distance heuristic."""
-            return abs(x1 - target_x) + abs(y1 - target_y)
-        
-        while open_set:
-            _, x, y = heapq.heappop(open_set)
-            current = (x, y)
-            
-            # Found the target
-            if x == target_x and y == target_y:
-                # Reconstruct path
-                path = []
-                while current in came_from:
-                    path.append(current)
-                    current = came_from[current]
-                path.reverse()
-                return path
-            
-            # Explore neighbors
-            for dx, dy in directions:
-                new_x, new_y = x + dx, y + dy
-                neighbor = (new_x, new_y)
-                
-                # Skip if out of bounds
-                if (new_x < 0 or new_x >= self.dungeon.width or 
-                    new_y < 0 or new_y >= self.dungeon.height):
-                    continue
-                    
-                # Skip if not walkable
-                if not self.dungeon.can_move_to(new_x, new_y):
-                    continue
-                
-                # Skip if there's an enemy at this position
-                if self.enemy_manager.get_enemy_at(new_x, new_y):
-                    continue
-                
-                # Calculate tentative g_score
-                tentative_g_score = g_scores[current] + 1
-                
-                if neighbor not in g_scores or tentative_g_score < g_scores[neighbor]:
-                    # This path is better than any previous one
-                    came_from[neighbor] = current
-                    g_scores[neighbor] = tentative_g_score
-                    f_score = tentative_g_score + heuristic(new_x, new_y)
-                    heapq.heappush(open_set, (f_score, new_x, new_y))
-        
-        # No path found
-        return []
-    
-    def process_auto_explore(self):
-        """Process auto-explore movement."""
-        if not self.auto_explore_active or self.player_is_dead:
-            return
-        
-        # Check if we can act
-        if not self.turn_manager.can_player_act():
-            return
-        
-        # Check for visible enemies and stop if found
-        if self.are_enemies_visible():
-            self.auto_explore_active = False
-            self.auto_explore_path = []
-            self.add_to_log("Auto-explore stopped: enemy detected!", RED)
-            print("Auto-explore stopped: enemy detected")
-            return
-        
-        # If we don't have a path, find one
-        if not self.auto_explore_path:
-            target = self.find_nearest_unexplored_area()
-            if target is None:
-                # No more unexplored areas
-                self.auto_explore_active = False
-                self.add_to_log("Auto-explore complete: all areas explored!", GREEN)
-                print("Auto-explore complete: all areas explored")
-                return
-            
-            # Find path to target
-            path = self.find_path_to_target(target[0], target[1])
-            if not path:
-                # Can't reach target, stop auto-explore
-                self.auto_explore_active = False
-                self.add_to_log("Auto-explore stopped: cannot reach target", YELLOW)
-                print("Auto-explore stopped: cannot reach target")
-                return
-            
-            self.auto_explore_path = path
-        
-        # Execute next move in path
-        if self.auto_explore_path:
-            # Get next position from path
-            next_pos = self.auto_explore_path[0]
-            self.auto_explore_path = self.auto_explore_path[1:]  # Remove the step we're taking
-            
-            # Calculate movement direction
-            dx = next_pos[0] - self.player.x
-            dy = next_pos[1] - self.player.y
-            
-            # Schedule movement action
-            dexterity = self.player.character.stats.get_total_stat(StatType.DEXTERITY)
-            self.turn_manager.schedule_player_action(
-                ActionType.MOVE,
-                target_pos=next_pos,
-                dexterity=dexterity
-            )
-    
-    def is_on_staircase(self) -> bool:
-        """Check if player is currently standing on a staircase."""
-        player_pos = (self.player.x, self.player.y)
-        cell_type = self.dungeon.get_cell(*player_pos)
-        print(f"Checking if on staircase at {player_pos}, cell type: {cell_type}")
-        return cell_type == CellType.STAIRCASE
-    
-    def handle_stair_navigation(self, direction: str):
-        """Handle going up or down stairs."""
-        print(f"Handling stair navigation: {direction}")
-        if not self.is_on_staircase():
-            if direction == 'down':
-                self.add_to_log("No staircase here to go down", RED)
-            else:
-                self.add_to_log("No staircase here to go up", RED)
-            print(f"Player tried to go {direction} stairs but not on staircase")
-            return
-        
-        print(f"Player is on staircase, proceeding with {direction}")
-        if direction == 'down':
-            self.go_down_stairs()
-        else:
-            self.go_up_stairs()
-    
-    def go_down_stairs(self):
-        """Descend to the next dungeon level."""
-        # Cancel auto-explore if active
-        if self.auto_explore_active:
-            self.auto_explore_active = False
-            self.auto_explore_path = []
-        
-        # Store current level state
-        current_state = {
-            'dungeon': self.dungeon,
-            'explored': self.explored.copy(),
-            'player_pos': (self.player.x, self.player.y),
-            'enemies': self.enemy_manager.enemies.copy() if hasattr(self.enemy_manager, 'enemies') else [],
-            'chests': self.chests.copy(),
-            'hp_pickups': self.hp_pickups.copy(),
-            'ground_items': self.ground_items.copy()
-        }
-        self.level_history[self.current_level] = current_state
-        
-        # Move to next level
-        self.current_level += 1
-        self.add_to_log(f"Descending to dungeon level {self.current_level}...", YELLOW)
-        print(f"Player descends to level {self.current_level}")
-        
-        # Generate new dungeon level
-        self.create_new_level()
-    
-    def go_up_stairs(self):
-        """Ascend to the previous dungeon level."""
-        if self.current_level <= 1:
-            self.add_to_log("You are already on the top level", YELLOW)
-            print("Player tried to go up from level 1")
-            return
-        
-        # Cancel auto-explore if active
-        if self.auto_explore_active:
-            self.auto_explore_active = False
-            self.auto_explore_path = []
-        
-        # Move to previous level
-        previous_level = self.current_level - 1
-        
-        if previous_level in self.level_history:
-            # Restore previous level
-            self.restore_level(previous_level)
-        else:
-            # This shouldn't happen, but generate a new level as fallback
-            self.current_level = previous_level
-            self.create_new_level()
-        
-        self.add_to_log(f"Ascending to dungeon level {self.current_level}...", YELLOW)
-        print(f"Player ascends to level {self.current_level}")
-    
-    def create_new_level(self):
-        """Create a new dungeon level."""
-        # Generate new dungeon
-        self.dungeon = DungeonWithStairs(DUNGEON_WIDTH, DUNGEON_HEIGHT, self.current_level)
-        
-        # Place player at start position
-        self.player.x, self.player.y = self.dungeon.start_pos
-        
-        # Reset exploration
-        self.explored = set()
-        self.visible = set()
-        
-        # Update camera and minimap
-        self.camera = Camera()
-        self.minimap = Minimap(self.dungeon)
-        
-        # Spawn new enemies
-        self.enemy_manager = EnemyManager()
-        self.enemy_manager.spawn_enemies_in_dungeon(
-            self.dungeon,
-            player_start_pos=self.player.get_position(),
-            dungeon_level=self.current_level
-        )
-        
-        # Set up enemy weapons in turn manager
-        for enemy in self.enemy_manager.get_living_enemies():
-            enemy_id = f"enemy_{enemy.x}_{enemy.y}"
-            enemy_weapon = self.get_enemy_weapon_name(enemy.enemy_type)
-            self.turn_manager.set_entity_weapon(enemy_id, enemy_weapon)
-        
-        # Update visibility
-        self.update_visibility()
-        
-        # Schedule initial enemy actions
-        self.schedule_enemy_actions()
-        
-        # Initialize treasure system
-        self.initialize_level_treasures()
-    
-    def restore_level(self, level_num: int):
-        """Restore a previously visited level."""
-        if level_num not in self.level_history:
-            return
-        
-        state = self.level_history[level_num]
-        self.current_level = level_num
-        
-        # Restore dungeon
-        self.dungeon = state['dungeon']
-        
-        # Find staircase position to place player
-        staircase_pos = None
-        for y in range(self.dungeon.height):
-            for x in range(self.dungeon.width):
-                if self.dungeon.get_cell(x, y) == CellType.STAIRCASE:
-                    staircase_pos = (x, y)
-                    break
-            if staircase_pos:
-                break
-        
-        # Place player on staircase or start position
-        if staircase_pos:
-            self.player.x, self.player.y = staircase_pos
-        else:
-            self.player.x, self.player.y = self.dungeon.start_pos
-        
-        # Restore exploration state
-        self.explored = state['explored'].copy()
-        
-        # Restore treasure state
-        self.chests = state.get('chests', {}).copy()
-        self.hp_pickups = state.get('hp_pickups', set()).copy()
-        self.ground_items = state.get('ground_items', {}).copy()
-        
-        # Update camera and minimap
-        self.camera = Camera()
-        self.minimap = Minimap(self.dungeon)
-        
-        # Restore enemies (they may have moved or been killed)
-        self.enemy_manager = EnemyManager()
-        if 'enemies' in state and state['enemies']:
-            self.enemy_manager.enemies = state['enemies'].copy()
-            # Update enemy positions in the position tracking
-            self.enemy_manager.enemy_positions.clear()
-            for enemy in self.enemy_manager.enemies:
-                if enemy.is_alive:
-                    self.enemy_manager.enemy_positions.add((enemy.x, enemy.y))
-        
-        # Set up enemy weapons in turn manager
-        for enemy in self.enemy_manager.get_living_enemies():
-            enemy_id = f"enemy_{enemy.x}_{enemy.y}"
-            enemy_weapon = self.get_enemy_weapon_name(enemy.enemy_type)
-            self.turn_manager.set_entity_weapon(enemy_id, enemy_weapon)
-        
-        # Update visibility
-        self.update_visibility()
-        
-        # Schedule enemy actions
-        self.schedule_enemy_actions()
-        
-        # Initialize treasure system for restored level
-        self.initialize_level_treasures()
-    
-    def initialize_level_treasures(self):
-        """Initialize chests and HP pickups for the current level."""
-        # Clear existing treasures
-        self.chests = {}
-        self.hp_pickups = set()
-        
-        # Find and initialize chests
-        chest_count = 0
-        pickup_count = 0
-        for y in range(self.dungeon.height):
-            for x in range(self.dungeon.width):
-                cell_type = self.dungeon.get_cell(x, y)
-                if cell_type == CellType.CHEST:
-                    self.chests[(x, y)] = {
-                        'opened': False,
-                        'contents': self.generate_chest_contents()
-                    }
-                    chest_count += 1
-                elif cell_type == CellType.HP_PICKUP:
-                    self.hp_pickups.add((x, y))
-                    pickup_count += 1
-        print(f"Initialized {chest_count} chests and {pickup_count} HP pickups")
-    
-    def generate_chest_contents(self) -> List:
-        """Generate random contents for a chest based on character's LUCK."""
-        from logic.character_system import ItemGenerator, ItemType, StatType
-        
-        contents = []
-        
-        # Get character's luck stat (from player's character)
-        luck = self.player.character.stats.get_total_stat(StatType.LUCK) if self.player else 10  # Default to 10 if no player
-        
-        # Base number of items (1-3) influenced by luck
-        # LUCK 10 (base): 60% 1 item, 30% 2 items, 10% 3 items
-        # LUCK 20 (high): 30% 1 item, 50% 2 items, 20% 3 items
-        # LUCK 30 (max): 10% 1 item, 60% 2 items, 30% 3 items
-        luck_factor = (luck - 10) / 20  # 0.0 at LUCK 10, 1.0 at LUCK 30
-        luck_factor = max(0.0, min(1.0, luck_factor))  # Clamp between 0 and 1
-        
-        # Adjust probabilities based on luck
-        one_item_chance = 0.6 - (0.5 * luck_factor)  # Decreases with luck
-        three_items_chance = 0.1 + (0.2 * luck_factor)  # Increases with luck
-        two_items_chance = 1.0 - one_item_chance - three_items_chance
-        
-        # Determine number of items
-        roll = random.random()
-        if roll < one_item_chance:
-            num_items = 1
-        elif roll < one_item_chance + two_items_chance:
-            num_items = 2
-        else:
-            num_items = 3
-        
-        # Generate items
-        for _ in range(num_items):
-            # Higher luck slightly improves item quality
-            quality_bonus = int(luck_factor * 2)  # 0-2 bonus to quality based on luck
-            quality = min(5, max(1, self.current_level + quality_bonus))
-            
-            item_type = random.choice(list(ItemType))
-            item = ItemGenerator.generate_random_item(item_type, quality)
-            if item:
-                contents.append(item)
-        
-        return contents
-    
-    def handle_chest_interaction(self, x: int, y: int):
-        """Handle player interaction with a chest."""
-        chest_pos = (x, y)
-        print(f"Checking chest at {chest_pos}, available chests: {list(self.chests.keys())}")
-        
-        if chest_pos not in self.chests:
-            # Double check the cell type directly
-            cell_type = self.dungeon.get_cell(x, y)
-            if cell_type == CellType.CHEST:
-                # Create a new chest entry if it wasn't tracked
-                self.chests[chest_pos] = {
-                    'opened': False,
-                    'contents': self.generate_chest_contents()
-                }
-                print(f"Added missing chest at {chest_pos}")
-            else:
-                print(f"No chest found at {chest_pos}")
-                return
-        
-        chest = self.chests[chest_pos]
-        if chest['opened']:
-            self.add_to_log("This chest is already empty", GREY)
-            return
-        
-        # Open the chest
-        chest['opened'] = True
-        contents = chest['contents']
-        
-        if contents:
-            # Scatter items around the chest
-            for item in contents:
-                # Find a valid position to drop the item
-                drop_positions = []
-                for dx in [-1, 0, 1]:
-                    for dy in [-1, 0, 1]:
-                        if dx == 0 and dy == 0:
-                            continue  # Skip chest's position
-                        new_x, new_y = x + dx, y + dy
-                        if (0 <= new_x < self.dungeon.width and 
-                            0 <= new_y < self.dungeon.height and
-                            self.dungeon.get_cell(new_x, new_y) == CellType.FLOOR and
-                            not self.is_position_occupied(new_x, new_y)):
-                            drop_positions.append((new_x, new_y))
-                
-                if drop_positions:
-                    # Choose a random valid position
-                    drop_x, drop_y = random.choice(drop_positions)
-                    # Store item in the dungeon
-                    if not hasattr(self, 'ground_items'):
-                        self.ground_items = {}
-                    self.ground_items[(drop_x, drop_y)] = item
-                    # Mark cell as containing an item
-                    self.dungeon.grid[drop_y][drop_x] = CellType.ITEM
-                    self.add_to_log(f"A {item.name} falls to the ground!", YELLOW)
-                else:
-                    # If no valid position found, add to inventory as fallback
-                    if self.player.character.inventory.add_item(item):
-                        self.add_to_log(f"Found: {item.name} (added to inventory)", GREEN)
-                    else:
-                        self.add_to_log(f"Found: {item.name} (inventory full, item lost)", RED)
-        else:
-            self.add_to_log("The chest is empty", GREY)
-        
-        # Change chest to floor so it appears opened
-        self.dungeon.grid[y][x] = CellType.FLOOR
-        print(f"Chest opened at {chest_pos}, contents: {[item.name for item in contents]}")
-    
-    def find_suitable_equipment_slot(self, item):
-        """Find a suitable equipment slot for an item."""
-        from logic.character_system import ItemType, EquipmentSlot
-        
-        # Map item types to equipment slots (only using valid enum values)
-        slot_mapping = {
-            ItemType.WEAPON: [EquipmentSlot.WEAPON_1, EquipmentSlot.WEAPON_2],
-            ItemType.ARMOUR: [EquipmentSlot.TORSO],
-            ItemType.HELMET: [EquipmentSlot.HEAD],
-            ItemType.BOOTS: [EquipmentSlot.LEGS],
-            ItemType.RING: [EquipmentSlot.RING_1, EquipmentSlot.RING_2],
-            ItemType.AMULET: [EquipmentSlot.NECK]
-        }
-        
-        possible_slots = slot_mapping.get(item.item_type, [])
-        
-        # Find the first available slot
-        for slot in possible_slots:
-            current_item = self.player.character.equipment.get_equipped_item(slot)
-            if current_item is None:
-                return slot
-        
-        # If no empty slot, return the first slot (will replace existing item)
-        if possible_slots:
-            return possible_slots[0]
-        
-        return None
-    
-    def handle_item_pickup(self, x: int, y: int):
-        """Handle player picking up an item from the ground."""
-        item_pos = (x, y)
-        if item_pos in self.ground_items:
-            item = self.ground_items[item_pos]
-            if self.player.character.inventory.add_item(item):
-                self.add_to_log(f"Picked up: {item.name}", GREEN)
-                del self.ground_items[item_pos]
-                self.dungeon.grid[y][x] = CellType.FLOOR
-            else:
-                self.add_to_log("Inventory is full!", RED)
-    
-    def handle_hp_pickup(self, x: int, y: int):
-        """Handle player picking up an HP pickup."""
-        pickup_pos = (x, y)
-        print(f"Checking HP pickup at {pickup_pos}, available pickups: {self.hp_pickups}")
-        
-        # Check if this position has an HP pickup
-        if pickup_pos not in self.hp_pickups:
-            # Double check the cell type directly
-            cell_type = self.dungeon.get_cell(x, y)
-            if cell_type == CellType.HP_PICKUP:
-                # Add it to our tracking set if it wasn't there
-                self.hp_pickups.add(pickup_pos)
-                print(f"Added missing HP pickup at {pickup_pos}")
-            else:
-                print(f"No HP pickup found at {pickup_pos}")
-                return
-        
-        # Remove the pickup
-        self.hp_pickups.remove(pickup_pos)
-        self.dungeon.grid[y][x] = CellType.FLOOR
-        
-        # Heal the player
-        heal_amount = random.randint(5, 15)  # Random healing amount
-        old_hp = self.player.character.current_hp
-        self.player.character.heal(heal_amount)
-        actual_heal = self.player.character.current_hp - old_hp
-        
-        if actual_heal > 0:
-            self.add_to_log(f"Picked up health potion! Healed {actual_heal} HP", GREEN)
-        else:
-            self.add_to_log("Picked up health potion, but you're already at full health", YELLOW)
-        
-        print(f"HP pickup collected at {pickup_pos}, healed {actual_heal} HP")
-    
-    def render(self):
-        if self.state_manager.current_state == GameState.PLAYING and self.player:
-            self.screen.fill(BLACK)
-            
-            # Render the dungeon viewport
-            self.render_dungeon()
-            
-            # Render enemies
-            self.render_enemies()
-            
-            # Render the player
-            self.render_player()
-            
-            # Render UI elements
-            self.render_ui()
-            
-            # Render health bars
-            self.render_health_bars()
-            
-            # Render character sheet if toggled
-            if self.show_character_sheet:
-                self.render_character_sheet()
-            
-            # Render interactive inventory if toggled
-            if self.show_interactive_inventory:
-                self.interactive_character_screen.render(
-                    self.screen, self.player.character, self.player.character.inventory)
-        else:
-            # Render menu/game over screens
-            self.state_manager.render()
-        
-        pygame.display.flip()
-    
-    def render_dungeon(self):
-        start_x = max(0, self.camera.x - VIEWPORT_WIDTH // 2)
-        end_x = min(DUNGEON_WIDTH, start_x + VIEWPORT_WIDTH)
-        start_y = max(0, self.camera.y - VIEWPORT_HEIGHT // 2)
-        end_y = min(DUNGEON_HEIGHT, start_y + VIEWPORT_HEIGHT)
-        
-        for y in range(start_y, end_y):
-            for x in range(start_x, end_x):
-                if (x, y) in self.explored:
-                    screen_x = int((x - start_x) * GRID_SIZE)
-                    screen_y = int((y - start_y) * GRID_SIZE)
-                    
-                    cell_type = self.dungeon.get_cell(x, y)
-                    is_visible = (x, y) in self.visible
-                    
-                    # Get appropriate sprite based on cell type
-                    sprite = None
-                    if cell_type == CellType.FLOOR:
-                        sprite = sprite_manager.load_oryx_sprite("floor_stone", SpriteType.TILES)
-                        if sprite:
-                            # Create a copy to tint
-                            tinted_sprite = sprite.copy()
-                            # Apply green tint for level 1, brown tint for level 2+
-                            if self.current_level == 1:
-                                tinted_sprite.fill((0, 255, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)  # Green for grass
-                            else:
-                                tinted_sprite.fill((139, 69, 19, 128), special_flags=pygame.BLEND_RGBA_MULT)  # Brown for dirt/cave
-                            sprite = tinted_sprite
-                    elif cell_type == CellType.WATER:
-                        sprite = sprite_manager.load_oryx_sprite("water", SpriteType.TILES)
-                        if sprite:
-                            # Create a copy to tint
-                            tinted_sprite = sprite.copy()
-                            # Apply blue tint
-                            tinted_sprite.fill((0, 0, 255, 128), special_flags=pygame.BLEND_RGBA_MULT)
-                            sprite = tinted_sprite
-                    elif cell_type == CellType.WALL:
-                        if self.current_level == 1:
-                            # Level 1: Trees with dark green tint
-                            sprite = sprite_manager.load_oryx_sprite("tree", SpriteType.TILES)
-                            if sprite:
-                                tinted_sprite = sprite.copy()
-                                tinted_sprite.fill((0, 100, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)
-                                sprite = tinted_sprite
-                        else:
-                            # Level 2+: Hash symbol with dark brown tint
-                            sprite = sprite_manager.load_oryx_sprite("hash", SpriteType.TILES)
-                            if sprite:
-                                tinted_sprite = sprite.copy()
-                                tinted_sprite.fill((65, 40, 15, 128), special_flags=pygame.BLEND_RGBA_MULT)  # Very dark brown
-                                sprite = tinted_sprite
-                    elif cell_type == CellType.DOOR:
-                        sprite = sprite_manager.load_oryx_sprite("door_wooden", SpriteType.TILES)
-                    elif cell_type == CellType.STAIRCASE:
-                        sprite = sprite_manager.load_oryx_sprite("stairs_down", SpriteType.TILES)
-                    elif cell_type == CellType.CHEST:
-                        sprite = sprite_manager.load_oryx_sprite("chest", SpriteType.TILES)
-                    elif cell_type == CellType.HP_PICKUP:
-                        sprite = sprite_manager.load_oryx_sprite("health_potion", SpriteType.TILES)
-                        if sprite:
-                            # Create a copy to tint
-                            tinted_sprite = sprite.copy()
-                            # Apply red tint
-                            tinted_sprite.fill((255, 0, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)
-                            sprite = tinted_sprite
-                    elif cell_type == CellType.ITEM:
-                        # Get item at this position
-                        item = self.ground_items.get((x, y))
-                        if item:
-                            # Choose sprite based on item type
-                            sprite_map = {
-                                'Sword': 'sword',
-                                'Axe': 'axe',
-                                'Shield': 'shield',
-                                'Staff': 'staff',
-                                'Bow': 'bow',
-                                'Robe': 'robe',
-                                'Ring': 'ring',
-                                'Helmet': 'helmet'
-                            }
-                            sprite_name = sprite_map.get(item.name.split()[0], 'sword')  # Default to sword if unknown
-                            sprite = sprite_manager.load_oryx_sprite(sprite_name, SpriteType.TILES)
-                            if sprite:
-                                # Create a copy to tint gold
-                                tinted_sprite = sprite.copy()
-                                # Apply gold tint (RGB: 255, 215, 0)
-                                tinted_sprite.fill((255, 215, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)
-                                sprite = tinted_sprite
-                    
-                    if sprite:
-                        # Render the sprite
-                        self.screen.blit(sprite, (screen_x, screen_y))
-                        
-                        # Add a subtle overlay for non-visible explored areas
-                        if not is_visible:
-                            overlay = pygame.Surface((GRID_SIZE, GRID_SIZE))
-                            overlay.set_alpha(150)  # Semi-transparent
-                            overlay.fill(BLACK)
-                            self.screen.blit(overlay, (screen_x, screen_y))
-    
-    def render_player(self):
-        # Calculate player position on screen
-        start_x = max(0, self.camera.x - VIEWPORT_WIDTH // 2)
-        start_y = max(0, self.camera.y - VIEWPORT_HEIGHT // 2)
-        
-        screen_x = int((self.player.x - start_x) * GRID_SIZE)
-        screen_y = int((self.player.y - start_y) * GRID_SIZE)
-        
-        # Calculate center position for the tile
-        center_x = screen_x + GRID_SIZE // 2
-        center_y = screen_y + GRID_SIZE // 2
-        
-        # Use the @ symbol sprite for the player
-        sprite = sprite_manager.load_oryx_sprite("player", SpriteType.TILES)
-        
-        if sprite:
-            # Create a copy to tint
-            tinted_sprite = sprite.copy()
-            # Apply yellow tint
-            tinted_sprite.fill((255, 255, 0, 128), special_flags=pygame.BLEND_RGBA_MULT)
-            
-            # Center the sprite in the tile
-            sprite_rect = tinted_sprite.get_rect(center=(center_x, center_y))
-            self.screen.blit(tinted_sprite, sprite_rect)
-        
-        # Flash red if recently damaged
-        if hasattr(self.player.character, 'last_damage_time') and self.player.character.last_damage_time < 0.5:
-            self.player.character.last_damage_time += 0.016  # Assuming 60 FPS
-            flash_surface = pygame.Surface((GRID_SIZE, GRID_SIZE), pygame.SRCALPHA)
-            flash_surface.fill((255, 0, 0, 150))  # Red with alpha
-            flash_rect = flash_surface.get_rect(center=(center_x, center_y))
-            self.screen.blit(flash_surface, flash_rect)
-    
-    def render_ui(self):
-        """Render the main UI - now just calls sidebar rendering."""
-        self.render_sidebar()
-    
-    def render_text(self, text: str, font_size: str, color: tuple, x: int, y: int) -> int:
-        """
-        Render text using sprite font and return the new y position.
-        
-        Args:
-            text: Text to render
-            font_size: One of 'title', 'header', 'text', or 'small'
-            color: RGB color tuple
-            x: X position
-            y: Y position
-            
-        Returns:
-            New Y position after rendering
-        """
-        surface = self.sprite_fonts[font_size].render_text(text.upper(), color)
-        rect = surface.get_rect(topleft=(x, y))
-        self.screen.blit(surface, rect)
-        return y + rect.height
-    
-    def render_sidebar(self):
-        """Render the game information sidebar."""
-        # Sidebar background
-        sidebar_rect = pygame.Rect(GAME_AREA_WIDTH, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT)
-        pygame.draw.rect(self.screen, (30, 30, 40), sidebar_rect)  # Dark blue-grey background
-        pygame.draw.line(self.screen, WHITE, (GAME_AREA_WIDTH, 0), (GAME_AREA_WIDTH, WINDOW_HEIGHT), 2)
-        
-        # Sprite Fonts
-        if not hasattr(self, 'sprite_fonts'):
-            self.sprite_fonts = {
-                'title': SpriteFont(scale=1.5),  # Larger scale for title
-                'header': SpriteFont(scale=1.0),  # Medium scale for headers
-                'text': SpriteFont(scale=0.75),   # Normal scale for text
-                'small': SpriteFont(scale=0.5)    # Smaller scale for details
-            }
-        
-        # Starting positions
-        x = GAME_AREA_WIDTH + 10
-        y = 10
-        section_spacing = 20  # Increased spacing between sections
-        
-        # Create an extra small font for logs
-        if not hasattr(self, 'log_font'):
-            self.log_font = SpriteFont(scale=0.35)  # Even smaller than small font
-        
-        # === PLAYER INFO SECTION ===
-        if hasattr(self.player, 'character'):
-            char_data = self.player.character.get_character_summary()
-            
-            # Character portrait at the top (25% larger)
-            portrait = self.class_portraits[self.player.character.character_class]
-            scaled_portrait = pygame.transform.scale(portrait, (60, 60))  # 48 * 1.25 = 60
-            portrait_rect = scaled_portrait.get_rect(topleft=(x, y))
-            self.screen.blit(scaled_portrait, portrait_rect)
-            y += 60 + 10  # Portrait height + small gap
-            
-            # Player name and level
-            y = self.render_text("ADVENTURER", 'text', WHITE, x, y)
-            y = self.render_text(f"LEVEL {char_data['level']}", 'header', WHITE, x, y)
-            y += section_spacing
-            
-            # Health text
-            current_hp, max_hp = char_data['hp']
-            hp_color = GREEN if current_hp > max_hp * 0.7 else YELLOW if current_hp > max_hp * 0.3 else RED
-            y = self.render_text("HP", 'text', hp_color, x, y)
-            
-            # HP numbers with slash
-            hp_text = f"{current_hp}/{max_hp}"  # Removed spaces around slash since we have built-in spacing
-            hp_surface = self.sprite_fonts['header'].render_text(hp_text, hp_color)
-            hp_rect = hp_surface.get_rect(topleft=(x, y))
-            self.screen.blit(hp_surface, hp_rect)
-            y += 24  # Height of header font
-            
-            # Health bar (no numbers)
-            bar_width = SIDEBAR_WIDTH - 20  # Wider health bar
-            bar_height = 8  # Thinner health bar
-            # Draw background
-            bar_rect = pygame.Rect(x, y, bar_width, bar_height)
-            pygame.draw.rect(self.screen, RED, bar_rect)
-            # Draw health portion
-            health_width = int(bar_width * (current_hp / max_hp))
-            health_rect = pygame.Rect(x, y, health_width, bar_height)
-            pygame.draw.rect(self.screen, hp_color, health_rect)
-            y += bar_height + 10  # Small gap before XP bar
-            
-            # XP bar
-            from logic.perk_system import PerkSystem
-            perk_system = PerkSystem()
-            current_exp = char_data['experience']
-            next_level_exp = perk_system.calculate_experience_required(char_data['level'] + 1)
-            
-            # XP text
-            y = self.render_text("XP", 'text', YELLOW, x, y)
-            
-            # XP numbers
-            xp_text = f"{current_exp}/{next_level_exp}"
-            xp_surface = self.sprite_fonts['header'].render_text(xp_text, YELLOW)
-            xp_rect = xp_surface.get_rect(topleft=(x, y))
-            self.screen.blit(xp_surface, xp_rect)
-            y += 24  # Height of header font
-            
-            # XP bar
-            xp_bar_rect = pygame.Rect(x, y, bar_width, bar_height)
-            pygame.draw.rect(self.screen, (100, 100, 0), xp_bar_rect)  # Dark gold background
-            
-            # Calculate XP progress
-            xp_progress = current_exp / next_level_exp if next_level_exp > 0 else 1.0
-            xp_width = int(bar_width * xp_progress)
-            xp_fill_rect = pygame.Rect(x, y, xp_width, bar_height)
-            pygame.draw.rect(self.screen, YELLOW, xp_fill_rect)  # Bright gold fill
-            # Draw border
-            pygame.draw.rect(self.screen, WHITE, bar_rect, 1)
-            y += bar_height + section_spacing
-        
-        # Player status (only show DEAD)
-        if self.player_is_dead:
-            status_text = "DEAD"
-            status_surface = self.sprite_fonts['text'].render_text(status_text, RED)
-            status_rect = status_surface.get_rect(topleft=(x, y))
-            self.screen.blit(status_surface, status_rect)
-            y += 30  # Fixed spacing after status
-        
-        y += section_spacing
-        
-        # === GAME LOG SECTION ===
-        y += section_spacing  # Extra space before log section
-        y = self.render_text("LOG", 'header', YELLOW, x, y)
-        y += section_spacing  # More space after the title
-        
-        # Calculate available height for log entries
-        available_height = WINDOW_HEIGHT - MINIMAP_SIZE - 20 - y  # 20px buffer
-        
-        # Render game log entries
-        for message, color in self.game_log:
-            # Stop if we're getting too close to the minimap
-            if y > WINDOW_HEIGHT - MINIMAP_SIZE - 40:  # 40px buffer
-                break
-                
-            # Wrap long messages if needed
-            if len(message) > 25:  # Approximate character limit for sidebar width
-                words = message.split(' ')
-                lines = []
-                current_line = ""
-                for word in words:
-                    if len(current_line + word) > 25:
-                        if current_line:
-                            lines.append(current_line.strip())
-                        current_line = word + " "
-                    else:
-                        current_line += word + " "
-                if current_line:
-                    lines.append(current_line.strip())
-                
-                for line in lines:
-                    if y > WINDOW_HEIGHT - MINIMAP_SIZE - 40:
-                        break
-                    log_surface = self.log_font.render_text(line, color)
-                    log_rect = log_surface.get_rect(topleft=(x, y))
-                    self.screen.blit(log_surface, log_rect)
-                    y += 10  # Tighter spacing for smaller font
-            else:
-                log_surface = self.log_font.render_text(message, color)
-                log_rect = log_surface.get_rect(topleft=(x, y))
-                self.screen.blit(log_surface, log_rect)
-                y += 10  # Tighter spacing for smaller font
-        
-        # === MINIMAP ===
-        # Always render minimap at bottom of sidebar
-        minimap_y = WINDOW_HEIGHT - MINIMAP_SIZE - 10
-        
-        self.minimap.render(self.screen, self.player.get_position(), (GAME_AREA_WIDTH + 25, minimap_y))
-    
-    def get_cell_colour(self, cell_type: CellType, is_visible: bool = True) -> Tuple[int, int, int]:
-        if cell_type == CellType.WALL:
-            base_colour = GREY
-        elif cell_type == CellType.FLOOR:
-            base_colour = WHITE
-        elif cell_type == CellType.DOOR:
-            base_colour = BROWN
-        elif cell_type == CellType.STAIRCASE:
-            base_colour = YELLOW  # Bright yellow for visibility
-        elif cell_type == CellType.CHEST:
-            base_colour = (139, 69, 19)  # Brown for chests
-        elif cell_type == CellType.HP_PICKUP:
-            base_colour = (255, 100, 100)  # Light red for HP pickups
-        else:
-            base_colour = BLACK
-        
-        # Dim colours for non-visible explored areas
-        if not is_visible:
-            return tuple(max(0, int(c * 0.4)) for c in base_colour)
-        
-        return base_colour
-    
-    def process_turn_actions(self):
-        """Process queued turn-based actions."""
-        # Process all queued actions
-        actions_processed = 0
-        max_actions_per_frame = 10  # Prevent infinite loops
-        player_acted = False
-        
-        while actions_processed < max_actions_per_frame:
-            next_action = self.turn_manager.process_next_action()
-            if not next_action:
-                break
-                
-            completion_time, action = next_action
-            self.execute_action(action)
-            actions_processed += 1
-            
-            # Track if player acted this frame
-            if action.actor_id == "player":
-                player_acted = True
-        
-        # Schedule enemy actions if player just acted
-        if player_acted:
-            self.schedule_enemy_actions()
-    
-    def execute_action(self, action):
-        """Execute a specific action."""
-        if action.action_type == ActionType.MOVE:
-            self.execute_move_action(action)
-        elif action.action_type == ActionType.ATTACK:
-            self.execute_attack_action(action)
-        elif action.action_type == ActionType.WAIT:
-            self.execute_wait_action(action)
-        elif action.action_type == ActionType.RELOAD:
-            self.execute_reload_action(action)
-    
-    def execute_move_action(self, action):
-        """Execute a movement action."""
-        if action.actor_id == "player":
-            # Don't execute player actions if dead
-            if self.player_is_dead:
-                return
-            new_x, new_y = action.target_pos
-            old_explored_count = len(self.explored)
-            self.player.move(new_x - self.player.x, new_y - self.player.y)
-            self.update_visibility()
-            
-            # Check for interactions with chests, items, and HP pickups
-            cell_type = self.dungeon.get_cell(new_x, new_y)
-            print(f"Player moved to ({new_x}, {new_y}), cell type: {cell_type}")
-            if cell_type == CellType.CHEST:
-                print("Triggering chest interaction")
-                self.handle_chest_interaction(new_x, new_y)
-            elif cell_type == CellType.HP_PICKUP:
-                print("Triggering HP pickup interaction")
-                self.handle_hp_pickup(new_x, new_y)
-            elif cell_type == CellType.ITEM:
-                print("Triggering item pickup")
-                self.handle_item_pickup(new_x, new_y)
-            elif cell_type == CellType.STAIRCASE:
-                print("Player is now standing on a staircase! Press '>' to go down or '<' to go up.")
-                self.add_to_log("Standing on stairs. Press '>' to descend or '<' to ascend", YELLOW)
-            
-            # Log exploration progress
-            new_explored_count = len(self.explored)
-            if new_explored_count > old_explored_count:
-                new_tiles = new_explored_count - old_explored_count
-                if new_tiles >= 5:
-                    self.add_to_log("Exploring new areas...", BLUE)
-            
-            print(f"Player moves to ({new_x}, {new_y})")
-            
-            # Process regeneration after player movement
-            regen_amount = self.player.character.process_regeneration()
-            if regen_amount > 0:
-                self.add_to_log(f"Regenerated {regen_amount} HP", GREEN)
-        else:
-            # Enemy movement
-            enemy = self.find_enemy_by_id(action.actor_id)
-            if enemy and action.target_pos:
-                new_x, new_y = action.target_pos
-                self.enemy_manager.move_enemy(enemy, new_x, new_y, self.player.x, self.player.y)
-                print(f"{enemy.enemy_type.value} moves to ({new_x}, {new_y})")
-    
-    def execute_attack_action(self, action):
-        """Execute an attack action."""
-        if action.actor_id == "player":
-            # Don't execute player actions if dead
-            if self.player_is_dead:
-                return
-            # Player attacking enemy
-            enemy = self.enemy_manager.get_enemy_at(*action.target_pos)
-            if enemy and enemy.is_alive:
-                self.handle_combat(self.player, enemy)
-                # Fire weapon if it's a ranged weapon
-                self.turn_manager.fire_weapon("player")
-                
-                # Process regeneration after combat
-                regen_amount = self.player.character.process_regeneration()
-                if regen_amount > 0:
-                    self.add_to_log(f"Regenerated {regen_amount} HP", GREEN)
-        else:
-            # Enemy attacking player
-            enemy = self.find_enemy_by_id(action.actor_id)
-            if enemy and action.target_id == "player":
-                # Check if enemy is adjacent to player
-                distance = abs(enemy.x - self.player.x) + abs(enemy.y - self.player.y)
-                if distance <= 1:
-                    self.handle_combat_enemy_attacks_player(enemy, self.player)
-    
-    def execute_wait_action(self, action):
-        """Execute a wait action."""
-        if action.actor_id == "player":
-            # Don't execute player actions if dead
-            if self.player_is_dead:
-                return
-            self.add_to_log("You wait and listen...", GREY)
-            print("Player waits...")
-            
-            # Process regeneration after waiting
-            regen_amount = self.player.character.process_regeneration()
-            if regen_amount > 0:
-                self.add_to_log(f"Regenerated {regen_amount} HP", GREEN)
-        else:
-            enemy = self.find_enemy_by_id(action.actor_id)
-            if enemy:
-                print(f"{enemy.enemy_type.value} waits...")
-    
-    def execute_reload_action(self, action):
-        """Execute a reload action."""
-        if action.actor_id == "player" and self.player_is_dead:
-            return
-        self.turn_manager.reload_weapon(action.actor_id)
-        if action.actor_id == "player":
-            print("Player reloads weapon")
-        else:
-            enemy = self.find_enemy_by_id(action.actor_id)
-            if enemy:
-                print(f"{enemy.enemy_type.value} reloads weapon")
-    
-    def find_enemy_by_id(self, enemy_id: str):
-        """Find an enemy by their ID."""
-        # Extract position from enemy ID (format: "enemy_x_y")
-        try:
-            parts = enemy_id.split("_")
-            if len(parts) >= 3:
-                x, y = int(parts[1]), int(parts[2])
-                return self.enemy_manager.get_enemy_at(x, y)
-        except:
-            pass
-        return None
-    
-    def schedule_enemy_actions(self):
-        """Schedule actions for all enemies that can act."""
-        # Don't schedule enemy actions if player is dead
-        if self.player_is_dead:
-            return
-            
-        living_enemies = self.enemy_manager.get_living_enemies()
-        enemies_scheduled = 0
-        for enemy in living_enemies:
-            enemy_id = f"enemy_{enemy.x}_{enemy.y}"
-            
-            if self.turn_manager.scheduler.can_entity_act(enemy_id):
-                enemies_scheduled += 1
-                
-                # Simple AI: move toward player or attack if adjacent
-                distance = abs(enemy.x - self.player.x) + abs(enemy.y - self.player.y)
-                
-                if distance == 1:
-                    # Adjacent to player - attack
-                    self.turn_manager.schedule_enemy_action(
-                        enemy_id, ActionType.ATTACK,
-                        target_id="player",
-                        dexterity=enemy.dexterity
-                    )
-                elif distance <= 8 and enemy.can_see_player(self.player.x, self.player.y):
-                    # Can see player - move toward them
-                    target_x, target_y = self.get_enemy_move_target(enemy)
-                    if target_x != enemy.x or target_y != enemy.y:
-                        self.turn_manager.schedule_enemy_action(
-                            enemy_id, ActionType.MOVE,
-                            target_pos=(target_x, target_y),
-                            dexterity=enemy.dexterity
-                        )
-                    else:
-                        # Can't move - wait
-                        self.turn_manager.schedule_enemy_action(
-                            enemy_id, ActionType.WAIT,
-                            dexterity=enemy.dexterity
-                        )
-                else:
-                    # Random movement or wait
-                    if random.random() < 0.3:  # 30% chance to move
-                        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-                        dx, dy = random.choice(directions)
-                        new_x, new_y = enemy.x + dx, enemy.y + dy
-                        
-                        if (self.dungeon.can_move_to(new_x, new_y) and 
-                            not self.enemy_manager.get_enemy_at(new_x, new_y) and
-                            (new_x, new_y) != (self.player.x, self.player.y)):
-                            
-                            self.turn_manager.schedule_enemy_action(
-                                enemy_id, ActionType.MOVE,
-                                target_pos=(new_x, new_y),
-                                dexterity=enemy.dexterity
-                            )
-                        else:
-                            self.turn_manager.schedule_enemy_action(
-                                enemy_id, ActionType.WAIT,
-                                dexterity=enemy.dexterity
-                            )
-                    else:
-                        self.turn_manager.schedule_enemy_action(
-                            enemy_id, ActionType.WAIT,
-                            dexterity=enemy.dexterity
-                        )
-        
-        # Only print summary if enemies were scheduled
-        if enemies_scheduled > 0:
-            print(f"Scheduled {enemies_scheduled} enemy actions")
-    
-    def get_enemy_move_target(self, enemy) -> Tuple[int, int]:
-        """Get the target position for an enemy to move toward the player."""
-        # Simple pathfinding toward player
-        dx = 0
-        dy = 0
-        
-        if self.player.x > enemy.x:
-            dx = 1
-        elif self.player.x < enemy.x:
-            dx = -1
-            
-        if self.player.y > enemy.y:
-            dy = 1
-        elif self.player.y < enemy.y:
-            dy = -1
-        
-        target_x = enemy.x + dx
-        target_y = enemy.y + dy
-        
-        # Check if target position is valid
-        if (self.dungeon.can_move_to(target_x, target_y) and 
-            not self.enemy_manager.get_enemy_at(target_x, target_y) and
-            (target_x, target_y) != (self.player.x, self.player.y)):
-            return target_x, target_y
-        
-        # Try just moving in one direction
-        if dx != 0:
-            alt_x = enemy.x + dx
-            if (self.dungeon.can_move_to(alt_x, enemy.y) and 
-                not self.enemy_manager.get_enemy_at(alt_x, enemy.y) and
-                (alt_x, enemy.y) != (self.player.x, self.player.y)):
-                return alt_x, enemy.y
-        
-        if dy != 0:
-            alt_y = enemy.y + dy
-            if (self.dungeon.can_move_to(enemy.x, alt_y) and 
-                not self.enemy_manager.get_enemy_at(enemy.x, alt_y) and
-                (enemy.x, alt_y) != (self.player.x, self.player.y)):
-                return enemy.x, alt_y
-        
-        # Can't move toward player
-        return enemy.x, enemy.y
-    
-    def handle_combat_enemy_attacks_player(self, enemy, player):
-        """Handle combat when an enemy attacks the player."""
-        enemy_damage = enemy.get_attack_damage()
-        player_died = player.character.take_damage(enemy_damage)
-        
-        if player_died:
-            self.player_is_dead = True
-            self.turn_manager.remove_entity("player")  # Cancel any pending actions
-            self.add_to_log(f"{enemy.enemy_type.value} deals fatal blow!", RED)
-            self.add_to_log("You have died!", RED)
-            self.add_to_log("GAME OVER", RED)
-            self.add_to_log("Press ESC to exit", GREY)
-            print(f"{enemy.enemy_type.value} deals {enemy_damage} damage! You died!")
-        else:
-            self.add_to_log(f"{enemy.enemy_type.value} hits you for {enemy_damage} damage!", RED)
-            print(f"{enemy.enemy_type.value} deals {enemy_damage} damage to you!")
-    
-    def render_enemies(self):
-        """Render all visible enemies."""
-        start_x = max(0, self.camera.x - VIEWPORT_WIDTH // 2)
-        start_y = max(0, self.camera.y - VIEWPORT_HEIGHT // 2)
-        
-        for enemy in self.enemy_manager.get_living_enemies():
-            # Only render if enemy is in visible area
-            if (enemy.x, enemy.y) in self.visible:
-                screen_x = int((enemy.x - start_x) * GRID_SIZE)
-                screen_y = int((enemy.y - start_y) * GRID_SIZE)
-                
-                # Skip if enemy is off screen
-                if (screen_x < -GRID_SIZE or screen_x > WINDOW_WIDTH or 
-                    screen_y < -GRID_SIZE or screen_y > WINDOW_HEIGHT - 150):
-                    continue
-                
-                # Get enemy sprite based on type
-                enemy_sprite_map = {
-                    EnemyType.CHICKEN: "chicken",
-                    EnemyType.FROG: "frog",
-                    EnemyType.SNAKE: "snake",
-                    EnemyType.BIRD: "bird",
-                    EnemyType.SPIDER: "spider",
-                    EnemyType.GOBLIN: "goblin"  # Added goblin sprite mapping
-                }
-                
-                sprite_name = enemy_sprite_map.get(enemy.enemy_type, "goblin")  # Default to goblin instead of rat
-                sprite = sprite_manager.load_oryx_sprite(sprite_name, SpriteType.TILES)
-                
-                if sprite:
-                    # Create a copy for tinting if needed
-                    if enemy.enemy_type == EnemyType.GOBLIN:
-                        # Apply bright green tint for goblins
-                        tinted_sprite = sprite.copy()
-                        tinted_sprite.fill((0, 255, 0, 255), special_flags=pygame.BLEND_RGBA_MULT)  # Bright Green
-                        sprite = tinted_sprite
-
-                    # Center the sprite in the tile
-                    center_x = screen_x + GRID_SIZE // 2
-                    center_y = screen_y + GRID_SIZE // 2
-                    sprite_rect = sprite.get_rect(center=(center_x, center_y))
-                    self.screen.blit(sprite, sprite_rect)
-                    
-                    # Flash red if recently damaged
-                    if enemy.damage_flash > 0:
-                        flash_surface = pygame.Surface(sprite.get_size(), pygame.SRCALPHA)
-                        flash_surface.fill((255, 0, 0, 150))  # Red with alpha
-                        flash_rect = flash_surface.get_rect(center=(center_x, center_y))
-                        self.screen.blit(flash_surface, flash_rect)
-    
-    def get_enemy_colour(self, enemy_type: EnemyType) -> Tuple[int, int, int]:
-        """Get colour for enemy based on type."""
-        colours = {
-            EnemyType.RAT: (139, 69, 19),      # Brown
-            EnemyType.GOBLIN: (34, 139, 34),   # Forest Green
-            EnemyType.SKELETON: (211, 211, 211), # Light Grey
-            EnemyType.SPIDER: (75, 0, 130),    # Indigo
-            EnemyType.ORC: (220, 20, 60),      # Crimson
-            EnemyType.TROLL: (85, 107, 47)     # Dark Olive Green
-        }
-        return colours.get(enemy_type, WHITE)
-    
-    def render_health_bars(self):
-        """Render health bars for visible enemies."""
-        # Enemy health bars removed for cleaner look
-        pass
-    
-    def handle_combat(self, player, enemy):
-        """Handle combat between player and enemy."""
-        # Player attacks enemy
-        player_damage = player.character.get_attack_damage()
-        enemy_died = enemy.take_damage(player_damage)
-        
-        # Log player attack
-        self.add_to_log(f"You hit {enemy.enemy_type.value} for {player_damage} damage!", WHITE)
-        
-        if enemy_died:
-            # Grant experience using new system
-            level_up_messages = player.character.gain_experience(enemy.exp_value)
-            
-            self.add_to_log(f"Defeated {enemy.enemy_type.value}!", GREEN)
-            self.add_to_log(f"Gained {enemy.exp_value} experience", YELLOW)
-            
-            # Add level up messages to log
-            for message in level_up_messages:
-                self.add_to_log(message, YELLOW)
-            
-            print(f"Defeated {enemy.enemy_type.value}! Gained {enemy.exp_value} experience.")
-            if level_up_messages:
-                for message in level_up_messages:
-                    print(message)
-        else:
-            # Enemy counter-attacks
-            enemy_damage = enemy.get_attack_damage()
-            player_died = player.character.take_damage(enemy_damage)
-            
-            if player_died:
-                self.player_is_dead = True
-                self.turn_manager.remove_entity("player")  # Cancel any pending actions
-                self.add_to_log("You have died!", RED)
-                self.add_to_log("GAME OVER", RED)
-                self.add_to_log("Press ESC to exit", GREY)
-                print("You died! Game Over.")
-            else:
-                self.add_to_log(f"{enemy.enemy_type.value} hits you for {enemy_damage} damage!", RED)
-                print(f"Combat! You deal {player_damage} damage, enemy deals {enemy_damage} damage.")
-    
-    def is_position_occupied(self, x: int, y: int) -> bool:
-        """Check if a position is occupied by player or enemy."""
-        # Check if player is at this position
-        if self.player.x == x and self.player.y == y:
-            return True
-        
-        # Check if any enemy is at this position
-        enemy_at_pos = self.enemy_manager.get_enemy_at(x, y)
-        return enemy_at_pos is not None and enemy_at_pos.is_alive
-    
-    def render_character_sheet(self):
-        """Display character information including perks."""
-        if not self.show_character_sheet:
-            return
-        
-        # Create semi-transparent overlay
-        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
-        overlay.set_alpha(200)
-        overlay.fill(BLACK)
-        self.screen.blit(overlay, (0, 0))
-        
-        # Character sheet background
-        sheet_width = 600
-        sheet_height = 500
-        sheet_x = (WINDOW_WIDTH - sheet_width) // 2
-        sheet_y = (WINDOW_HEIGHT - sheet_height) // 2
-        
-        sheet_surface = pygame.Surface((sheet_width, sheet_height))
-        sheet_surface.fill(DARK_GREY)
-        pygame.draw.rect(sheet_surface, WHITE, (0, 0, sheet_width, sheet_height), 2)
-        
-        # Fonts
-        title_font = pygame.font.Font(None, 32)
-        text_font = pygame.font.Font(None, 24)
-        small_font = pygame.font.Font(None, 20)
-        
-        # Get character summary
-        summary = self.player.character.get_character_summary()
-        
-        # Title
-        title_text = title_font.render(f"{summary['name']} - Level {summary['level']}", True, YELLOW)
-        title_rect = title_text.get_rect(centerx=sheet_width // 2, y=10)
-        sheet_surface.blit(title_text, title_rect)
-        
-        # Experience and perk points
-        exp_text = text_font.render(f"Experience: {summary['experience']} ({summary['experience_to_next']} to next level)", True, WHITE)
-        sheet_surface.blit(exp_text, (20, 50))
-        
-        perk_points_text = text_font.render(f"Perk Points: {summary['perk_points']}", True, YELLOW)
-        sheet_surface.blit(perk_points_text, (20, 75))
-        
-        # Health
-        hp_current, hp_max = summary['hp']
-        hp_text = text_font.render(f"Health: {hp_current}/{hp_max}", True, GREEN if hp_current > hp_max * 0.5 else RED)
-        sheet_surface.blit(hp_text, (20, 100))
-        
-        # Stats section
-        stats_y = 130
-        stats_text = text_font.render("Stats:", True, WHITE)
-        sheet_surface.blit(stats_text, (20, stats_y))
-        
-        stats_data = summary['stats']
-        y_offset = stats_y + 25
-        for stat, (base, bonus, total) in stats_data.items():
-            stat_display = f"{stat.value.title()}: {base}"
-            if bonus != 0:
-                stat_display += f" + {bonus} = {total}"
-            stat_text = small_font.render(stat_display, True, WHITE)
-            sheet_surface.blit(stat_text, (40, y_offset))
-            y_offset += 20
-        
-        # Equipment section
-        equipment_y = y_offset + 10
-        equipment_text = text_font.render("Equipment:", True, WHITE)
-        sheet_surface.blit(equipment_text, (300, stats_y))
-        
-        equipment_data = summary['equipment']
-        y_offset = stats_y + 25
-        for slot, item_name in equipment_data.items():
-            if item_name != "Empty":
-                equipment_display = f"{slot.replace('_', ' ').title()}: {item_name}"
-                eq_text = small_font.render(equipment_display, True, WHITE)
-                sheet_surface.blit(eq_text, (320, y_offset))
-                y_offset += 20
-        
-        # Perk bonuses section (if any)
-        if summary.get('perk_bonuses'):
-            perk_bonus_y = equipment_y + 20
-            perk_title = text_font.render("Active Perk Bonuses:", True, YELLOW)
-            sheet_surface.blit(perk_title, (20, perk_bonus_y))
-            
-            y_offset = perk_bonus_y + 25
-            for bonus_type, value in summary['perk_bonuses'].items():
-                if value != 0:
-                    bonus_display = f"{bonus_type.replace('_', ' ').title()}: +{value}"
-                    bonus_text = small_font.render(bonus_display, True, GREEN)
-                    sheet_surface.blit(bonus_text, (40, y_offset))
-                    y_offset += 20
-        
-        # Sight range
-        sight_range_text = text_font.render(f"Sight Range: {summary['sight_range']}", True, WHITE)
-        sheet_surface.blit(sight_range_text, (300, equipment_y + 50))
-        
-        # Instructions
-        instructions = [
-            "Press 'C' to close",
-            "Press 'P' to open perk tree (Coming Soon!)"
-        ]
-        
-        for i, instruction in enumerate(instructions):
-            instruction_text = small_font.render(instruction, True, YELLOW)
-            instruction_rect = instruction_text.get_rect(centerx=sheet_width // 2, y=sheet_height - 60 + i * 20)
-            sheet_surface.blit(instruction_text, instruction_rect)
-        
-        # Blit the character sheet to screen
-        self.screen.blit(sheet_surface, (sheet_x, sheet_y))
-    
-    def start_new_game(self, character: Character):
-        """Start a new game with the given character."""
-        # Initialize game components
-        self.current_level = 1
-        self.pending_level_transition = False
-        self.dungeon = DungeonWithStairs(DUNGEON_WIDTH, DUNGEON_HEIGHT, self.current_level)
-        self.player = Player(self.dungeon.start_pos[0], self.dungeon.start_pos[1])
-        self.player.character = character  # Use the selected character
-        self.camera = Camera()
-        self.minimap = Minimap(self.dungeon)
-        self.enemy_manager = EnemyManager()
-        
-        # Reset game state
-        self.explored = set()
-        self.visible = set()
-        self.game_start_time = time.time()
-        self.show_character_sheet = False
-        self.player_is_dead = False
-        
-        # Reset auto-explore state
-        self.auto_explore_active = False
-        self.auto_explore_path = []
-        
-        # Reset level navigation state
-        self.level_history = {}
-        
-        # Reset treasure system
-        self.chests = {}
-        self.hp_pickups = set()
-        self.ground_items = {}  # Initialize ground items tracking
-        
-        # Initialize turn-based system
-        self.turn_manager = TurnManager()
-        
-        # Set up player weapon
-        weapon_name = "Unarmed"
-        weapon_item = character.equipment.get_equipped_item(EquipmentSlot.WEAPON_1)
-        if weapon_item:
-            weapon_name = weapon_item.name
-        self.turn_manager.set_entity_weapon("player", weapon_name)
-        
-        # Initialize enemies and visibility
-        self.enemy_manager.spawn_enemies_in_dungeon(
-            self.dungeon, 
-            player_start_pos=self.player.get_position(),
-            dungeon_level=self.current_level
-        )
-        
-        # Set up enemy weapons
-        for enemy in self.enemy_manager.get_living_enemies():
-            enemy_id = f"enemy_{enemy.x}_{enemy.y}"
-            enemy_weapon = self.get_enemy_weapon_name(enemy.enemy_type)
-            self.turn_manager.set_entity_weapon(enemy_id, enemy_weapon)
-        
-        self.update_visibility()
-        
-        # Schedule initial enemy actions
-        self.schedule_enemy_actions()
-        
-        # Initialize game log with welcome messages
-        self.game_log = []
-        self.add_to_log(f"{character.name} enters the dungeon!", YELLOW)
-        enemy_count = len(self.enemy_manager.get_living_enemies())
-        self.add_to_log(f"You sense {enemy_count} enemies lurking...", RED)
-        self.add_to_log("Adventure begins!", GREEN)
-        self.add_to_log("Press ESC to exit", GREY)
-        
-        print(f"Started new game as {character.name}! Turn-based combat enabled.")
-        print(f"Spawned {len(self.enemy_manager.get_living_enemies())} enemies")
-    
-    def get_enemy_weapon_name(self, enemy_type: EnemyType) -> str:
-        """Get the weapon name for an enemy type."""
-        weapon_names = {
-            EnemyType.CHICKEN: "Beak",
-            EnemyType.FROG: "Tongue",
-            EnemyType.SNAKE: "Fangs",
-            EnemyType.BIRD: "Talons",
-            EnemyType.SPIDER: "Fangs"
-        }
-        return weapon_names.get(enemy_type, "Claws")
-    
-    def run(self):
-        while self.running:
-            self.handle_events()
-            self.update()
-            self.render()
-            self.clock.tick(FPS)
-        
-        pygame.quit()
-        sys.exit()
-
-class Player:
-    def __init__(self, x: int, y: int):
+    def __init__(self, name: str, x: int, y: int, npc_type: str, dialogue: List[str]):
+        self.name = name
         self.x = x
         self.y = y
-        # Create character with default class (Warrior)
-        self.character = CharacterClassData.create_character(CharacterClass.WARRIOR, "Adventurer")
+        self.npc_type = npc_type  # "shopkeeper", "innkeeper", "blacksmith", "priest"
+        self.dialogue = dialogue
+        self.current_dialogue = 0
     
-    def move(self, dx: int, dy: int):
-        self.x += dx
-        self.y += dy
-    
-    def get_position(self) -> Tuple[int, int]:
-        return (self.x, self.y)
-    
-    def get_sight_range(self) -> int:
-        return self.character.get_sight_range()
+    def get_dialogue(self) -> str:
+        """Get current dialogue line."""
+        if self.dialogue:
+            dialogue = self.dialogue[self.current_dialogue]
+            self.current_dialogue = (self.current_dialogue + 1) % len(self.dialogue)
+            return dialogue
+        return f"Hello, I'm {self.name}."
 
-class Camera:
-    def __init__(self):
-        self.x = 0
-        self.y = 0
+class Town:
+    """Represents the starting town area."""
     
-    def update(self, target_x: int, target_y: int):
-        self.x = target_x
-        self.y = target_y
-
-class Dungeon:
     def __init__(self, width: int, height: int):
         self.width = width
         self.height = height
-        self.grid = [[CellType.WALL for _ in range(width)] for _ in range(height)]
-        self.start_pos = (width // 2, height // 2)
-        
-        # Generate the dungeon
-        self.generate()
+        self.grid = [[CellType.TOWN_WALL for _ in range(width)] for _ in range(height)]
+        self.dungeon_entrance = (width // 2, height - 2)  # Bottom center
+        self.npcs = []
+        self.painted_sprites = {}  # (x, y) -> sprite_name
+        self._generate_town()
+        self._place_npcs()
     
-    def generate(self):
-        """Generate a dungeon using a simple room and corridor algorithm."""
-        # Start with all walls
-        for y in range(self.height):
-            for x in range(self.width):
-                self.grid[y][x] = CellType.WALL
-        
-        # Generate rooms
-        rooms = []
-        max_rooms = 15
-        room_attempts = 50
-        
-        # Add some water features (ponds and streams)
-        self.add_water_features()
-        
-        for _ in range(room_attempts):
-            if len(rooms) >= max_rooms:
-                break
-                
-            # Random room size
-            room_width = random.randint(4, 10)
-            room_height = random.randint(4, 10)
-            
-            # Random position
-            x = random.randint(1, self.width - room_width - 1)
-            y = random.randint(1, self.height - room_height - 1)
-            
-            # Check if room overlaps with existing rooms
-            new_room = Room(x, y, room_width, room_height)
-            if not any(new_room.intersects(room) for room in rooms):
-                rooms.append(new_room)
-                
-                # Carve out the room
-                for room_y in range(y, y + room_height):
-                    for room_x in range(x, x + room_width):
-                        self.grid[room_y][room_x] = CellType.FLOOR
-        
-        # Connect rooms with corridors
-        for i in range(len(rooms) - 1):
-            self.create_corridor(rooms[i], rooms[i + 1])
-        
-        # Set start position in the first room
-        if rooms:
-            first_room = rooms[0]
-            self.start_pos = (first_room.center_x, first_room.center_y)
-    
-    def create_corridor(self, room1: 'Room', room2: 'Room'):
-        """Create a corridor between two rooms."""
-        # Get centers of rooms
-        x1, y1 = room1.center_x, room1.center_y
-        x2, y2 = room2.center_x, room2.center_y
-        
-        # Create L-shaped corridor
-        if random.choice([True, False]):
-            # Horizontal first, then vertical
-            for x in range(min(x1, x2), max(x1, x2) + 1):
-                self.grid[y1][x] = CellType.FLOOR
-            for y in range(min(y1, y2), max(y1, y2) + 1):
-                self.grid[y][x2] = CellType.FLOOR
-        else:
-            # Vertical first, then horizontal
-            for y in range(min(y1, y2), max(y1, y2) + 1):
-                self.grid[y][x1] = CellType.FLOOR
-            for x in range(min(x1, x2), max(x1, x2) + 1):
-                self.grid[y2][x] = CellType.FLOOR
-    
-    def can_move_to(self, x: int, y: int, can_swim: bool = False) -> bool:
-        """Check if the player can move to the given position."""
-        if x < 0 or x >= self.width or y < 0 or y >= self.height:
-            return False
-        cell = self.grid[y][x]
-        if cell == CellType.WATER:
-            return can_swim
-        return cell in [CellType.FLOOR, CellType.DOOR, CellType.STAIRCASE, CellType.CHEST, CellType.HP_PICKUP, CellType.ITEM]
-    
-    def get_cell(self, x: int, y: int) -> CellType:
-        """Get the cell type at the given position."""
-        if x < 0 or x >= self.width or y < 0 or y >= self.height:
-            return CellType.WALL
-        return self.grid[y][x]
-        
-    def add_water_features(self):
-        """Add water features like ponds and streams to the dungeon."""
-        if self.level == 1:  # Natural water features for forest level
-            self._add_forest_water_features()
-        elif self.level == 2:  # Underground water for cavern level
-            self._add_cavern_water_features()
-        # Level 3 has no water (goblin warren)
-    
-    def _add_forest_water_features(self):
-        """Add natural forest water features - meandering streams and natural ponds."""
-        feature_type = random.choice(['stream', 'ponds'])
-        
-        if feature_type == 'stream':
-            # Create one major meandering stream
-            # Start from a random edge
-            if random.choice([True, False]):
-                # West to East
-                x = 2
-                y = random.randint(10, self.height - 10)
-                dx = 1
-                dy = 0
-            else:
-                # North to South
-                x = random.randint(10, self.width - 10)
-                y = 2
-                dx = 0
-                dy = 1
-            
-            # Create meandering path
-            points = []
-            while 0 < x < self.width - 1 and 0 < y < self.height - 1:
-                points.append((x, y))
-                
-                # Randomly adjust direction while maintaining general flow
-                if random.random() < 0.3:  # 30% chance to meander
-                    if dx != 0:  # Moving horizontally
-                        y += random.choice([-1, 0, 0, 1])  # Bias towards straight
-                    else:  # Moving vertically
-                        x += random.choice([-1, 0, 0, 1])  # Bias towards straight
-                
-                x += dx
-                y += dy
-            
-            # Widen the stream and add some natural variation
-            for px, py in points:
-                # Main stream
-                self.grid[py][px] = CellType.WATER
-                
-                # Add some width variation
-                if random.random() < 0.7:  # 70% chance for width at each point
-                    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                        nx, ny = px + dx, py + dy
-                        if (0 < nx < self.width - 1 and 0 < ny < self.height - 1 and
-                            self.grid[ny][nx] != CellType.WATER):
-                            if random.random() < 0.3:  # 30% chance for each adjacent tile
-                                self.grid[ny][nx] = CellType.WATER
-        
-        else:  # ponds
-            # Create 2-3 natural ponds with irregular shapes
-            num_ponds = random.randint(2, 3)
-            for _ in range(num_ponds):
-                # Choose pond center away from edges
-                center_x = random.randint(10, self.width - 10)
-                center_y = random.randint(10, self.height - 10)
-                
-                # Create irregular pond shape using cellular automata-like approach
-                pond_tiles = set([(center_x, center_y)])
-                size = random.randint(15, 25)  # Target pond size
-                
-                while len(pond_tiles) < size:
-                    # Expand from existing water tiles
-                    new_tiles = set()
-                    for wx, wy in pond_tiles:
-                        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                            nx, ny = wx + dx, wy + dy
-                            if (0 < nx < self.width - 1 and 0 < ny < self.height - 1 and
-                                (nx, ny) not in pond_tiles and
-                                random.random() < 0.6):  # 60% chance to expand
-                                new_tiles.add((nx, ny))
-                    pond_tiles.update(new_tiles)
-                
-                # Apply the pond to the grid
-                for px, py in pond_tiles:
-                    self.grid[py][px] = CellType.WATER
-    
-    def _add_cavern_water_features(self):
-        """Add underground water features - small pools and narrow streams."""
-        # Add a few small underground pools
-        num_pools = random.randint(3, 5)
-        for _ in range(num_pools):
-            center_x = random.randint(5, self.width - 6)
-            center_y = random.randint(5, self.height - 6)
-            radius = random.randint(1, 2)
-            
-            for y in range(center_y - radius, center_y + radius + 1):
-                for x in range(center_x - radius, center_x + radius + 1):
-                    if (0 <= x < self.width and 0 <= y < self.height and
-                        ((x - center_x) ** 2 + (y - center_y) ** 2) <= radius ** 2):
-                        self.grid[y][x] = CellType.WATER
-
-
-class DungeonWithStairs(Dungeon):
-    """Extended dungeon class that places staircases for level progression."""
-    
-    def __init__(self, width: int, height: int, level: int = 1):
-        self.level = level
-        super().__init__(width, height)
-    
-    def generate(self):
-        """Generate dungeon with staircase placement."""
-        # Call parent generation
-        super().generate()
-        
-        # Place staircase in a suitable location
-        self.place_staircase()
-        
-        # Place chests and HP pickups
-        self.place_treasures()
-    
-    def place_staircase(self):
-        """Place a staircase in the dungeon."""
-        # Find all floor tiles that are not too close to start position
-        start_x, start_y = self.start_pos
-        candidates = []
+    def _generate_town(self):
+        """Generate the town layout with buildings and paths."""
+        # Create main paths
+        for x in range(1, self.width - 1):
+            self.grid[1][x] = CellType.TOWN_FLOOR  # Top path
+            self.grid[self.height - 2][x] = CellType.TOWN_FLOOR  # Bottom path
         
         for y in range(1, self.height - 1):
-            for x in range(1, self.width - 1):
-                if self.grid[y][x] == CellType.FLOOR:
-                    # Calculate distance from start position
-                    distance = abs(x - start_x) + abs(y - start_y)
-                    
-                    # Must be reasonably far from start and have space around it
-                    if distance > 10:
-                        # Check that it's not in a narrow corridor
-                        open_neighbors = 0
-                        for dx in [-1, 0, 1]:
-                            for dy in [-1, 0, 1]:
-                                if dx == 0 and dy == 0:
-                                    continue
-                                nx, ny = x + dx, y + dy
-                                if (0 <= nx < self.width and 0 <= ny < self.height and 
-                                    self.grid[ny][nx] == CellType.FLOOR):
-                                    open_neighbors += 1
-                        
-                        # Prefer locations with some open space (room centers)
-                        if open_neighbors >= 3:
-                            candidates.append((x, y, distance))
+            self.grid[y][1] = CellType.TOWN_FLOOR  # Left path
+            self.grid[y][self.width - 2] = CellType.TOWN_FLOOR  # Right path
         
-        if candidates:
-            # Sort by distance and pick from the farthest third
-            candidates.sort(key=lambda c: c[2], reverse=True)
-            top_third = candidates[:max(1, len(candidates) // 3)]
-            stair_x, stair_y, _ = random.choice(top_third)
-            self.grid[stair_y][stair_x] = CellType.STAIRCASE
-            print(f"Placed staircase at ({stair_x}, {stair_y}) for level {self.level}")
-            return  # Make sure we only place one staircase
-        else:
-            # Fallback: place in any floor tile far from start
-            for y in range(1, self.height - 1):
-                for x in range(1, self.width - 1):
-                    if self.grid[y][x] == CellType.FLOOR:
-                        distance = abs(x - start_x) + abs(y - start_y)
-                        if distance > 5:
-                            self.grid[y][x] = CellType.STAIRCASE
-                            print(f"Placed fallback staircase at ({x}, {y})")
-                            return
+        # Create central plaza
+        center_x, center_y = self.width // 2, self.height // 2
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                x, y = center_x + dx, center_y + dy
+                if 0 <= x < self.width and 0 <= y < self.height:
+                    self.grid[y][x] = CellType.TOWN_FLOOR
+        
+        # Create buildings around the plaza
+        buildings = [
+            (center_x - 4, center_y - 2, 3, 3),  # Shop
+            (center_x + 2, center_y - 2, 3, 3),  # Inn
+            (center_x - 4, center_y + 2, 3, 3),  # Blacksmith
+            (center_x + 2, center_y + 2, 3, 3),  # Temple
+        ]
+        
+        for bx, by, bw, bh in buildings:
+            for dy in range(bh):
+                for dx in range(bw):
+                    x, y = bx + dx, by + dy
+                    if 0 <= x < self.width and 0 <= y < self.height:
+                        if dy == 0 or dy == bh - 1 or dx == 0 or dx == bw - 1:
+                            self.grid[y][x] = CellType.TOWN_WALL
+                        else:
+                            self.grid[y][x] = CellType.TOWN_BUILDING
+        
+        # Add doors to buildings
+        for bx, by, bw, bh in buildings:
+            # Front door
+            door_x = bx + bw // 2
+            door_y = by - 1
+            if 0 <= door_x < self.width and 0 <= door_y < self.height:
+                self.grid[door_y][door_x] = CellType.TOWN_DOOR
+        
+        # Place dungeon entrance
+        dx, dy = self.dungeon_entrance
+        self.grid[dy][dx] = CellType.DUNGEON_ENTRANCE
+        self.grid[dy - 1][dx] = CellType.TOWN_FLOOR  # Path to entrance
     
-    def place_treasures(self):
-        """Place chests and HP pickups throughout the dungeon."""
-        # Find all rooms from the generation process
-        rooms = self._find_rooms()
+    def _place_npcs(self):
+        """Place NPCs in the town."""
+        center_x, center_y = self.width // 2, self.height // 2
         
-        # Place chests (max 2 per room)
-        for room in rooms:
-            self._place_chests_in_room(room)
+        # Shopkeeper in the shop
+        self.npcs.append(NPC(
+            "Marcus the Merchant", center_x - 2, center_y - 1, "shopkeeper",
+            [
+                "Welcome to my shop! I have the finest goods in town.",
+                "Adventuring gear? You've come to the right place!",
+                "Be careful in that dungeon - it's dangerous down there."
+            ]
+        ))
         
-        # Place HP pickups randomly throughout dungeon
-        self._place_hp_pickups()
+        # Innkeeper in the inn
+        self.npcs.append(NPC(
+            "Elena the Innkeeper", center_x + 2, center_y - 1, "innkeeper",
+            [
+                "Welcome to the Golden Dragon Inn!",
+                "Need a place to rest? We have the best beds in town.",
+                "The dungeon entrance is just south of here."
+            ]
+        ))
+        
+        # Blacksmith
+        self.npcs.append(NPC(
+            "Thorin the Blacksmith", center_x - 2, center_y + 1, "blacksmith",
+            [
+                "I forge the finest weapons and armour!",
+                "That old dungeon has been there for centuries.",
+                "Need your gear repaired? I'm your man!"
+            ]
+        ))
+        
+        # Priest
+        self.npcs.append(NPC(
+            "Father Benedict", center_x + 2, center_y + 1, "priest",
+            [
+                "May the light guide your path, adventurer.",
+                "The dungeon below holds ancient secrets and dangers.",
+                "I can bless your equipment if you need divine protection."
+            ]
+        ))
     
-    def _find_rooms(self):
-        """Find room areas in the generated dungeon."""
-        rooms = []
-        visited = set()
-        
-        # Find rectangular room areas
-        for y in range(1, self.height - 1):
-            for x in range(1, self.width - 1):
-                if (x, y) not in visited and self.grid[y][x] == CellType.FLOOR:
-                    # Try to find a room starting from this point
-                    room = self._discover_room(x, y, visited)
-                    if room and room.width >= 4 and room.height >= 4:  # Only consider sizeable rooms
-                        rooms.append(room)
-        
-        return rooms
-    
-    def _discover_room(self, start_x: int, start_y: int, visited: set):
-        """Discover a room's boundaries starting from a floor tile."""
-        # Find the bounds of this floor area
-        min_x = max_x = start_x
-        min_y = max_y = start_y
-        
-        # Expand to find room boundaries
-        floor_tiles = set()
-        to_check = [(start_x, start_y)]
-        
-        while to_check:
-            x, y = to_check.pop()
-            if (x, y) in visited or self.grid[y][x] != CellType.FLOOR:
-                continue
-                
-            visited.add((x, y))
-            floor_tiles.add((x, y))
-            min_x = min(min_x, x)
-            max_x = max(max_x, x)
-            min_y = min(min_y, y)
-            max_y = max(max_y, y)
-            
-            # Check adjacent tiles
-            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-                nx, ny = x + dx, y + dy
-                if (0 <= nx < self.width and 0 <= ny < self.height and 
-                    (nx, ny) not in visited):
-                    to_check.append((nx, ny))
-        
-        # Create room if it's a reasonable size
-        width = max_x - min_x + 1
-        height = max_y - min_y + 1
-        if len(floor_tiles) >= 12:  # Minimum floor tiles for a room
-            return Room(min_x, min_y, width, height)
+    def get_npc_at(self, x: int, y: int) -> Optional[NPC]:
+        """Get NPC at specific position."""
+        for npc in self.npcs:
+            if npc.x == x and npc.y == y:
+                return npc
         return None
     
-    def _place_chests_in_room(self, room):
-        """Place 0-2 chests in a room."""
-        # 70% chance of having at least one chest
-        if random.random() > 0.7:
-            return
-        
-        # Determine number of chests (1-2)
-        num_chests = 1 if random.random() < 0.7 else 2
-        
-        # Find suitable locations in the room (not too close to center or edges)
-        candidates = []
-        for y in range(room.y + 1, room.y + room.height - 1):
-            for x in range(room.x + 1, room.x + room.width - 1):
-                if (self.grid[y][x] == CellType.FLOOR and 
-                    abs(x - room.center_x) > 1 and abs(y - room.center_y) > 1):
-                    candidates.append((x, y))
-        
-        # Place chests
-        for _ in range(min(num_chests, len(candidates))):
-            if candidates:
-                chest_pos = random.choice(candidates)
-                candidates.remove(chest_pos)
-                self.grid[chest_pos[1]][chest_pos[0]] = CellType.CHEST
-                print(f"Placed chest at {chest_pos} in room ({room.x}, {room.y}) size {room.width}x{room.height}")
+    def get_cell(self, x: int, y: int) -> CellType:
+        """Get cell type at position."""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return self.grid[y][x]
+        return CellType.TOWN_WALL
     
-    def _place_hp_pickups(self):
-        """Place HP pickups randomly throughout the dungeon."""
-        floor_tiles = []
-        
-        # Find all floor tiles
-        for y in range(self.height):
-            for x in range(self.width):
-                if self.grid[y][x] == CellType.FLOOR:
-                    floor_tiles.append((x, y))
-        
-        # Place HP pickups (roughly 1 per 50 floor tiles)
-        num_pickups = max(1, len(floor_tiles) // 50)
-        
-        for _ in range(num_pickups):
-            if floor_tiles:
-                pickup_pos = random.choice(floor_tiles)
-                floor_tiles.remove(pickup_pos)
-                self.grid[pickup_pos[1]][pickup_pos[0]] = CellType.HP_PICKUP
-                print(f"Placed HP pickup at {pickup_pos}")
+    def can_move_to(self, x: int, y: int) -> bool:
+        """Check if player can move to position."""
+        cell = self.get_cell(x, y)
+        return cell in [CellType.TOWN_FLOOR, CellType.TOWN_DOOR, CellType.DUNGEON_ENTRANCE]
 
 class Room:
+    """Represents a room in the dungeon."""
+    
     def __init__(self, x: int, y: int, width: int, height: int):
         self.x = x
         self.y = y
@@ -2422,81 +199,2179 @@ class Room:
         self.height = height
         self.center_x = x + width // 2
         self.center_y = y + height // 2
-    
-    def intersects(self, other: 'Room') -> bool:
-        """Check if this room intersects with another room."""
-        return (self.x < other.x + other.width and
-                self.x + self.width > other.x and
-                self.y < other.y + other.height and
-                self.y + self.height > other.y)
+        self.connected = False
 
-class Minimap:
-    def __init__(self, dungeon: Dungeon):
-        self.dungeon = dungeon
-        self.explored = set()
-        self.visible = set()
-        self.surface = pygame.Surface((MINIMAP_SIZE, MINIMAP_SIZE))
-        
-    def update_explored(self, explored: set):
-        self.explored = explored
+class Dungeon:
+    """Represents a dungeon level with improved procedural generation."""
     
-    def update_visible(self, visible: set):
-        self.visible = visible
+    def __init__(self, width: int, height: int, level: int = 1):
+        self.width = width
+        self.height = height
+        self.level = level
+        self.grid = [[CellType.WALL for _ in range(width)] for _ in range(height)]
+        self.start_pos = None  # Will be set after generation
+        self.staircase_pos = None
+        self.staircase_up_pos = None  # Position of staircase going up
+        self.rooms = []
+        self.chests = []
+        self.health_pickups = []
+        self._generate_dungeon()
     
-    def render(self, screen: pygame.Surface, player_pos: Tuple[int, int], pos: Tuple[int, int] = None):
-        """Render minimap at specified position or default location."""
-        self.surface.fill(BLACK)
+    def _generate_dungeon(self):
+        """Generate a procedural dungeon with rooms and corridors."""
+        # Generate rooms
+        self._generate_rooms()
         
-        # Calculate scale factor
-        scale_x = MINIMAP_SIZE / self.dungeon.width
-        scale_y = MINIMAP_SIZE / self.dungeon.height
+        # Connect rooms with corridors
+        self._connect_rooms()
         
-        # Render explored areas
-        for (x, y) in self.explored:
-            mini_x = int(x * scale_x)
-            mini_y = int(y * scale_y)
+        # Set start position to the center of the first room
+        self._set_start_position()
+        
+        # Place staircase up (where player entered)
+        self._place_staircase_up()
+        
+        # Place special items
+        self._place_special_items()
+        
+        # Place staircase (down to next level)
+        if self.level < 5:  # Only add stairs if not the deepest level
+            self._place_staircase()
+    
+    def _generate_rooms(self):
+        """Generate rooms for the dungeon."""
+        num_rooms = random.randint(5, 8) + self.level  # More rooms on deeper levels
+        min_room_size = 4
+        max_room_size = 8
+        
+        for _ in range(num_rooms * 3):  # Try multiple times to fit rooms
+            if len(self.rooms) >= num_rooms:
+                break
+                
+            width = random.randint(min_room_size, max_room_size)
+            height = random.randint(min_room_size, max_room_size)
+            x = random.randint(1, self.width - width - 1)
+            y = random.randint(1, self.height - height - 1)
             
-            cell_type = self.dungeon.get_cell(x, y)
-            is_visible = (x, y) in self.visible
+            room = Room(x, y, width, height)
             
-            if cell_type == CellType.FLOOR:
-                base_colour = GREEN  # Changed to match main view
-            elif cell_type == CellType.WALL:
-                base_colour = GREY
-            elif cell_type == CellType.WATER:
-                base_colour = BLUE  # Water tiles in blue
-            elif cell_type == CellType.STAIRCASE:
-                base_colour = YELLOW
-            elif cell_type == CellType.CHEST:
-                base_colour = (139, 69, 19)  # Brown
-            elif cell_type == CellType.HP_PICKUP:
-                base_colour = (255, 100, 100)  # Light red
+            # Check if room overlaps with existing rooms
+            if not self._room_overlaps(room):
+                self.rooms.append(room)
+                self._carve_room(room)
+        
+        # Ensure we have at least one room
+        if not self.rooms:
+            # Create a simple room in the center
+            center_x = self.width // 2 - 3
+            center_y = self.height // 2 - 3
+            room = Room(center_x, center_y, 6, 6)
+            self.rooms.append(room)
+            self._carve_room(room)
+    
+    def _room_overlaps(self, room: Room) -> bool:
+        """Check if a room overlaps with existing rooms."""
+        for existing_room in self.rooms:
+            if (room.x < existing_room.x + existing_room.width and
+                room.x + room.width > existing_room.x and
+                room.y < existing_room.y + existing_room.height and
+                room.y + room.height > existing_room.y):
+                return True
+        return False
+    
+    def _carve_room(self, room: Room):
+        """Carve out a room in the dungeon grid."""
+        for y in range(room.y, room.y + room.height):
+            for x in range(room.x, room.x + room.width):
+                if 0 <= x < self.width and 0 <= y < self.height:
+                    self.grid[y][x] = CellType.FLOOR
+    
+    def _connect_rooms(self):
+        """Connect rooms with corridors."""
+        if len(self.rooms) < 2:
+            return
+        
+        # Connect each room to the next one
+        for i in range(len(self.rooms) - 1):
+            room1 = self.rooms[i]
+            room2 = self.rooms[i + 1]
+            self._create_corridor(room1, room2)
+        
+        # Connect the last room back to the first to ensure connectivity
+        if len(self.rooms) > 2:
+            self._create_corridor(self.rooms[-1], self.rooms[0])
+    
+    def _create_corridor(self, room1: Room, room2: Room):
+        """Create a corridor between two rooms."""
+        # Start from center of room1
+        x1, y1 = room1.center_x, room1.center_y
+        x2, y2 = room2.center_x, room2.center_y
+        
+        # Create L-shaped corridor
+        # First horizontal
+        start_x = min(x1, x2)
+        end_x = max(x1, x2)
+        for x in range(start_x, end_x + 1):
+            if 0 <= x < self.width and 0 <= y1 < self.height:
+                self.grid[y1][x] = CellType.FLOOR
+        
+        # Then vertical
+        start_y = min(y1, y2)
+        end_y = max(y1, y2)
+        for y in range(start_y, end_y + 1):
+            if 0 <= x2 < self.width and 0 <= y < self.height:
+                self.grid[y][x2] = CellType.FLOOR
+    
+    def _place_special_items(self):
+        """Place chests and health pickups in the dungeon."""
+        # Place chests in some rooms
+        for room in self.rooms[1:]:  # Skip the first room (start room)
+            if random.random() < 0.3:  # 30% chance per room
+                chest_x = room.x + random.randint(1, room.width - 2)
+                chest_y = room.y + random.randint(1, room.height - 2)
+                if 0 <= chest_x < self.width and 0 <= chest_y < self.height:
+                    self.grid[chest_y][chest_x] = CellType.CHEST
+                    self.chests.append((chest_x, chest_y))
+        
+        # Place health pickups
+        for room in self.rooms:
+            if random.random() < 0.2:  # 20% chance per room
+                pickup_x = room.x + random.randint(1, room.width - 2)
+                pickup_y = room.y + random.randint(1, room.height - 2)
+                if 0 <= pickup_x < self.width and 0 <= pickup_y < self.height:
+                    self.grid[pickup_y][pickup_x] = CellType.HP_PICKUP
+                    self.health_pickups.append((pickup_x, pickup_y))
+    
+    def _place_staircase(self):
+        """Place the staircase to the next level."""
+        if self.rooms:
+            # Place staircase in the last room
+            last_room = self.rooms[-1]
+            self.staircase_pos = (last_room.center_x, last_room.center_y)
+            self.grid[self.staircase_pos[1]][self.staircase_pos[0]] = CellType.STAIRCASE
+    
+    def _set_start_position(self):
+        """Set the start position to the center of the first room."""
+        if self.rooms:
+            first_room = self.rooms[0]
+            self.start_pos = (first_room.center_x, first_room.center_y)
+        else:
+            # Fallback to center if no rooms
+            self.start_pos = (self.width // 2, self.height // 2)
+    
+    def _place_staircase_up(self):
+        """Place staircase going up (where player entered)."""
+        if self.rooms and len(self.rooms) > 0:
+            # Place staircase up in the first room, near the start position
+            first_room = self.rooms[0]
+            # Find a position near the start but not on it
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx == 0 and dy == 0:
+                        continue
+                    x = first_room.center_x + dx
+                    y = first_room.center_y + dy
+                    if (0 <= x < self.width and 0 <= y < self.height and 
+                        self.grid[y][x] == CellType.FLOOR and 
+                        (x, y) != self.start_pos):
+                        self.staircase_up_pos = (x, y)
+                        self.grid[y][x] = CellType.STAIRCASE
+                        return
+    
+    def get_cell(self, x: int, y: int) -> CellType:
+        """Get cell type at position."""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return self.grid[y][x]
+        return CellType.WALL
+    
+    def can_move_to(self, x: int, y: int) -> bool:
+        """Check if player can move to position."""
+        cell = self.get_cell(x, y)
+        return cell in [CellType.FLOOR, CellType.DOOR, CellType.STAIRCASE]
+
+class Player:
+    """Represents the player character."""
+    
+    def __init__(self, character: Character, x: int, y: int):
+        self.character = character
+        self.x = x
+        self.y = y
+        self.last_move_time = 0
+        self.move_cooldown = 0.1  # 100ms between moves
+    
+    def can_move(self, current_time: float) -> bool:
+        """Check if player can move now."""
+        return current_time - self.last_move_time >= self.move_cooldown
+    
+    def move_to(self, x: int, y: int, current_time: float):
+        """Move player to new position."""
+        self.x = x
+        self.y = y
+        self.last_move_time = current_time
+
+class Game:
+    """Main game class."""
+    
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((1024, 768))
+        pygame.display.set_caption("Mythica Dungeon Crawler")
+        self.clock = pygame.time.Clock()
+        self.running = True
+        
+        # Game state
+        self.current_area = GameArea.TOWN
+        self.dungeon_level = 1
+        self.max_dungeon_level = 5
+        
+        # Auto-explore state
+        self.auto_explore_active = False
+        self.auto_explore_path = []
+        self.auto_explore_target = None
+        
+        # Click navigation
+        self.click_path = []
+        self.click_target = None
+        self.click_navigation_active = False
+        
+        # Death and scoring
+        self.is_dead = False
+        self.final_score = 0
+        self.high_scores = self._load_high_scores()
+        
+        # Initialize sprite system
+        self.sprite_manager = GameSpriteManager()
+        assets_path = Path(__file__).parent / "assets"
+        if not self.sprite_manager.load_game_assets(assets_path):
+            print("Warning: Could not load all game assets")
+        
+        # Initialize game areas
+        self.town = self._create_town()
+        self.dungeon = Dungeon(50, 40, self.dungeon_level)
+        
+        # Initialize player
+        self.player = None
+        self.enemy_manager = EnemyManager()
+        
+        # Game state manager
+        self.state_manager = GameStateManager(self.screen, self)
+        
+        # Camera
+        self.camera_x = 0
+        self.camera_y = 0
+        self.tile_size = 16  # Sprite width
+        self.tile_height = 24  # Sprite height
+        
+        # UI
+        self.font = pygame.font.Font(None, 24)
+        self.small_font = pygame.font.Font(None, 18)
+        
+        # Game log
+        self.log_messages = []
+        self.max_log_messages = 10
+        
+        # Turn system
+        self.turn_manager = TurnManager()
+        
+        # Targeting system
+        self.targeting_mode = False
+        self.targeting_x = 0
+        self.targeting_y = 0
+        self.targeting_valid = False
+        
+        # Fog of war system
+        self.explored_tiles = set()  # Set of (x, y) tuples for explored tiles
+        self.visible_tiles = set()   # Set of (x, y) tuples for currently visible tiles
+        
+        # Sprite consistency system
+        self.tile_sprites = {}  # Cache for consistent tile sprites (x, y) -> sprite_name
+        
+        # Last known positions system
+        self.last_known_positions = {}  # entity_id -> (x, y, timestamp)
+        
+        # Level persistence system
+        self.saved_levels = {}  # level_number -> level_data
+        self.saved_town_data = None  # town_data
+    
+    def _clear_level_data(self):
+        """Clear level-specific data when changing levels."""
+        # Clear fog of war data
+        self.explored_tiles.clear()
+        self.visible_tiles.clear()
+        
+        # Clear last known positions
+        self.last_known_positions.clear()
+        
+        # Clear sprite cache
+        self.tile_sprites.clear()
+    
+    def _clear_level_data_for_new_level(self):
+        """Clear level-specific data for a completely new level."""
+        # Clear fog of war data
+        self.explored_tiles.clear()
+        self.visible_tiles.clear()
+        
+        # Clear last known positions
+        self.last_known_positions.clear()
+        
+        # Clear sprite cache for new level
+        self.tile_sprites.clear()
+    
+    def _save_level_data(self, level_number: int):
+        """Save current level data."""
+        level_data = {
+            'explored_tiles': self.explored_tiles.copy(),
+            'visible_tiles': self.visible_tiles.copy(),
+            'last_known_positions': self.last_known_positions.copy(),
+            'tile_sprites': self.tile_sprites.copy(),
+            'dungeon': self.dungeon,
+            'enemies': self.enemy_manager.get_living_enemies().copy()
+        }
+        self.saved_levels[level_number] = level_data
+    
+    def _restore_level_data(self, level_number: int):
+        """Restore level data if it exists."""
+        if level_number in self.saved_levels:
+            level_data = self.saved_levels[level_number]
+            self.explored_tiles = level_data['explored_tiles'].copy()
+            self.visible_tiles = level_data['visible_tiles'].copy()
+            self.last_known_positions = level_data['last_known_positions'].copy()
+            self.tile_sprites = level_data['tile_sprites'].copy()
+            self.dungeon = level_data['dungeon']
+            
+            # Restore enemies
+            self.enemy_manager.enemies = level_data['enemies'].copy()
+            
+            return True
+        return False
+    
+    def _save_town_data(self):
+        """Save current town data."""
+        self.saved_town_data = {
+            'explored_tiles': self.explored_tiles.copy(),
+            'visible_tiles': self.visible_tiles.copy(),
+            'last_known_positions': self.last_known_positions.copy(),
+            'tile_sprites': self.tile_sprites.copy()
+        }
+    
+    def _restore_town_data(self):
+        """Restore town data if it exists."""
+        if self.saved_town_data:
+            self.explored_tiles = self.saved_town_data['explored_tiles'].copy()
+            self.visible_tiles = self.saved_town_data['visible_tiles'].copy()
+            self.last_known_positions = self.saved_town_data['last_known_positions'].copy()
+            self.tile_sprites = self.saved_town_data['tile_sprites'].copy()
+            return True
+        return False
+    
+    def _update_fog_of_war(self):
+        """Update fog of war based on player position and sight range."""
+        if not self.player:
+            return
+            
+        # Clear current visible tiles
+        self.visible_tiles.clear()
+        
+        # Get player position and sight range
+        player_x, player_y = self.player.x, self.player.y
+        sight_range = self.player.character.get_sight_range() if self.player.character else 6
+        
+        # Always make the player's current position visible
+        self.visible_tiles.add((player_x, player_y))
+        self.explored_tiles.add((player_x, player_y))
+        
+        # Always make adjacent tiles visible (for movement)
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                self.visible_tiles.add((player_x + dx, player_y + dy))
+                self.explored_tiles.add((player_x + dx, player_y + dy))
+        
+        # Calculate visible tiles using ray casting for the rest
+        for dx in range(-sight_range, sight_range + 1):
+            for dy in range(-sight_range, sight_range + 1):
+                # Skip if outside sight range
+                if dx * dx + dy * dy > sight_range * sight_range:
+                    continue
+                    
+                # Cast ray from player to this position
+                if self._is_visible(player_x, player_y, player_x + dx, player_y + dy):
+                    self.visible_tiles.add((player_x + dx, player_y + dy))
+                    self.explored_tiles.add((player_x + dx, player_y + dy))
+                else:
+                    # Even if not visible, mark walls along the line as explored
+                    self._mark_walls_along_line(player_x, player_y, player_x + dx, player_y + dy)
+        
+        # Update last known positions of visible entities
+        self._update_last_known_positions()
+    
+    def _is_visible(self, start_x, start_y, end_x, end_y):
+        """Check if a position is visible using ray casting."""
+        # Simple line-of-sight check
+        dx = end_x - start_x
+        dy = end_y - start_y
+        steps = max(abs(dx), abs(dy))
+        
+        if steps == 0:
+            return True
+            
+        # Check each step along the line
+        for i in range(1, steps + 1):
+            x = start_x + (dx * i) // steps
+            y = start_y + (dy * i) // steps
+            
+            # Check if we hit a wall
+            if self.current_area == GameArea.TOWN:
+                if self.town.get_cell(x, y) in [CellType.TOWN_WALL, CellType.TOWN_BUILDING]:
+                    return False
             else:
-                base_colour = BROWN
+                if self.dungeon.get_cell(x, y) == CellType.WALL:
+                    return False
+                    
+        return True
+    
+    def _is_tile_visible(self, x, y):
+        """Check if a tile is currently visible to the player."""
+        return (x, y) in self.visible_tiles
+    
+    def _is_tile_explored(self, x, y):
+        """Check if a tile has been explored before."""
+        return (x, y) in self.explored_tiles
+    
+    def _mark_walls_along_line(self, start_x, start_y, end_x, end_y):
+        """Mark walls along a line as explored."""
+        dx = end_x - start_x
+        dy = end_y - start_y
+        steps = max(abs(dx), abs(dy))
+        
+        if steps == 0:
+            return
             
-            # Dim colour for non-visible explored areas
-            if not is_visible:
-                colour = tuple(max(0, int(c * 0.5)) for c in base_colour)
+        # Check each step along the line
+        for i in range(1, steps + 1):
+            x = start_x + (dx * i) // steps
+            y = start_y + (dy * i) // steps
+            
+            # Check bounds
+            if self.current_area == GameArea.TOWN:
+                if (x < 0 or x >= self.town.width or y < 0 or y >= self.town.height):
+                    break
+                cell = self.town.get_cell(x, y)
+                if cell in [CellType.TOWN_WALL, CellType.TOWN_BUILDING]:
+                    self.explored_tiles.add((x, y))
+                    break  # Stop at first wall
             else:
-                colour = base_colour
+                if (x < 0 or x >= self.dungeon.width or y < 0 or y >= self.dungeon.height):
+                    break
+                cell = self.dungeon.get_cell(x, y)
+                if cell == CellType.WALL:
+                    self.explored_tiles.add((x, y))
+                    break  # Stop at first wall
+    
+    def _update_last_known_positions(self):
+        """Update last known positions of visible entities."""
+        import time
+        current_time = time.time()
+        
+        # Update enemies
+        for i, enemy in enumerate(self.enemy_manager.get_living_enemies()):
+            if self._is_tile_visible(enemy.x, enemy.y):
+                enemy_id = f"enemy_{i}_{enemy.enemy_type.name}_{enemy.x}_{enemy.y}"
+                self.last_known_positions[enemy_id] = (enemy.x, enemy.y, current_time)
+        
+        # Update NPCs
+        for npc in self.town.npcs:
+            if self._is_tile_visible(npc.x, npc.y):
+                npc_id = f"npc_{npc.name}_{npc.x}_{npc.y}"
+                self.last_known_positions[npc_id] = (npc.x, npc.y, current_time)
+    
+    def _create_town(self):
+        """Create town, loading custom data if available."""
+        if self._load_custom_town():
+            print("Loaded custom town from saved_town.json")
+            return self._create_town_from_data()
+        else:
+            print("Using generated town layout")
+            return Town(40, 30)
+    
+    def _load_custom_town(self):
+        """Load custom town data from file."""
+        try:
+            with open("saved_town.json", 'r') as f:
+                self.custom_town_data = json.load(f)
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            print(f"Error loading custom town: {e}")
+            return False
+    
+    def _create_town_from_data(self):
+        """Create town from custom data."""
+        if not hasattr(self, 'custom_town_data'):
+            return Town(40, 30)
+        
+        data = self.custom_town_data
+        width = data.get("width", 40)
+        height = data.get("height", 30)
+        
+        # Create town with custom dimensions
+        town = Town(width, height)
+        
+        # Load custom tiles
+        for key, cell_value in data.get("tiles", {}).items():
+            x, y = map(int, key.split(','))
+            if 0 <= x < width and 0 <= y < height:
+                town.grid[y][x] = CellType(cell_value)
+        
+        # Find the actual dungeon entrance position in the loaded town
+        for y in range(height):
+            for x in range(width):
+                if town.grid[y][x] == CellType.DUNGEON_ENTRANCE:
+                    town.dungeon_entrance = (x, y)
+                    print(f"Found dungeon entrance at ({x}, {y}) in loaded town")
+                    break
+            if town.dungeon_entrance != (width // 2, height - 2):
+                break
+        
+        # Load custom NPCs
+        town.npcs = []
+        for npc_data in data.get("npcs", []):
+            npc = NPC(
+                name=npc_data["type"].title(),
+                x=npc_data["x"],
+                y=npc_data["y"],
+                npc_type=npc_data["type"],
+                dialogue=self._get_npc_dialogue(npc_data["type"])
+            )
+            town.npcs.append(npc)
+        
+        # Load painted sprites
+        town.painted_sprites = {}
+        for key, sprite in data.get("painted_sprites", {}).items():
+            x, y = map(int, key.split(','))
+            town.painted_sprites[(x, y)] = sprite
+        
+        return town
+    
+    def _get_npc_dialogue(self, npc_type):
+        """Get dialogue for NPC type."""
+        dialogues = {
+            "shopkeeper": ["Welcome to my shop!", "What can I get for you today?"],
+            "innkeeper": ["Need a place to rest?", "The rooms are clean and safe."],
+            "blacksmith": ["I forge the finest weapons!", "Need something sharp?"],
+            "priest": ["May the gods bless you!", "Need healing or guidance?"]
+        }
+        return dialogues.get(npc_type, ["Hello there!"])
+    
+    def start_game(self, character: Character):
+        """Start the game with a character."""
+        self.player = Player(character, self.town.width // 2, self.town.height // 2)
+        self.current_area = GameArea.TOWN
+        self.update_camera()
+        self.add_to_log(f"Welcome to Mythica, {character.name}!", (100, 255, 100))
+        self.add_to_log("Explore the town and find the dungeon entrance!", (255, 255, 100))
+    
+    def add_to_log(self, message: str, color: Tuple[int, int, int] = (255, 255, 255)):
+        """Add a message to the game log."""
+        self.log_messages.append((message, color))
+        if len(self.log_messages) > self.max_log_messages:
+            self.log_messages.pop(0)
+    
+    def update_camera(self):
+        """Update camera position to follow player."""
+        if self.player:
+            # Center camera on player
+            self.camera_x = self.player.x - self.screen.get_width() // (2 * self.tile_size)
+            self.camera_y = self.player.y - self.screen.get_height() // (2 * self.tile_height)
             
-            pygame.draw.rect(self.surface, colour, 
-                           (mini_x, mini_y, max(1, int(scale_x)), max(1, int(scale_y))))
+            # Keep camera within bounds
+            if self.current_area == GameArea.TOWN:
+                max_camera_x = max(0, self.town.width - self.screen.get_width() // self.tile_size)
+                max_camera_y = max(0, self.town.height - self.screen.get_height() // self.tile_height)
+            else:
+                max_camera_x = max(0, self.dungeon.width - self.screen.get_width() // self.tile_size)
+                max_camera_y = max(0, self.dungeon.height - self.screen.get_height() // self.tile_height)
+            
+            self.camera_x = max(0, min(self.camera_x, max_camera_x))
+            self.camera_y = max(0, min(self.camera_y, max_camera_y))
+    
+    def handle_input(self, event):
+        """Handle input events."""
+        if event.type == pygame.KEYDOWN:
+            if self.state_manager.current_state == GameState.PLAYING:
+                self._handle_game_input(event.key)
+            else:
+                # Handle menu input
+                continue_game, character = self.state_manager.handle_input(event)
+                if not continue_game:
+                    self.running = False
+                elif character:
+                    self.start_game(character)
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:  # Left click
+                if self.state_manager.current_state == GameState.PLAYING:
+                    self._handle_mouse_click(event.pos)
+        elif event.type == pygame.QUIT:
+            self.running = False
+    
+    def _handle_game_input(self, key):
+        """Handle input during gameplay."""
+        if not self.player:
+            return
         
-        # Render player position
-        player_mini_x = int(player_pos[0] * scale_x)
-        player_mini_y = int(player_pos[1] * scale_y)
-        pygame.draw.circle(self.surface, RED, 
-                         (player_mini_x, player_mini_y), 3)
+        current_time = pygame.time.get_ticks() / 1000.0
         
-        # Draw minimap border
-        pygame.draw.rect(self.surface, WHITE, (0, 0, MINIMAP_SIZE, MINIMAP_SIZE), 2)
+        # Movement
+        if key == pygame.K_w or key == pygame.K_UP:
+            self._try_move_player(0, -1, current_time)
+        elif key == pygame.K_s or key == pygame.K_DOWN:
+            self._try_move_player(0, 1, current_time)
+        elif key == pygame.K_a or key == pygame.K_LEFT:
+            self._try_move_player(-1, 0, current_time)
+        elif key == pygame.K_d or key == pygame.K_RIGHT:
+            self._try_move_player(1, 0, current_time)
         
-        # Blit to main screen at specified position or default
-        if pos is None:
-            pos = (WINDOW_WIDTH - MINIMAP_SIZE - 10, 10)
-        screen.blit(self.surface, pos)
+        # Diagonal movement
+        elif key == pygame.K_KP7:  # Northwest
+            self._try_move_player(-1, -1, current_time)
+        elif key == pygame.K_KP8:  # North
+            self._try_move_player(0, -1, current_time)
+        elif key == pygame.K_KP9:  # Northeast
+            self._try_move_player(1, -1, current_time)
+        elif key == pygame.K_KP4:  # West
+            self._try_move_player(-1, 0, current_time)
+        elif key == pygame.K_KP6:  # East
+            self._try_move_player(1, 0, current_time)
+        elif key == pygame.K_KP1:  # Southwest
+            self._try_move_player(-1, 1, current_time)
+        elif key == pygame.K_KP2:  # South
+            self._try_move_player(0, 1, current_time)
+        elif key == pygame.K_KP3:  # Southeast
+            self._try_move_player(1, 1, current_time)
+        
+        # Actions
+        elif key == pygame.K_c:  # Character sheet
+            self._show_character_sheet()
+        elif key == pygame.K_i:  # Inventory
+            self._show_inventory()
+        elif key == pygame.K_SPACE:  # Wait
+            self.add_to_log("You wait...", (200, 200, 200))
+        elif key == pygame.K_ESCAPE:
+            self.running = False
+        
+        # Level transitions
+        elif key == pygame.K_RETURN:  # Enter/activate
+            self._try_activate()
+        elif key == pygame.K_t:  # Return to town
+            self._return_to_town()
+        elif key == pygame.K_PERIOD:  # Shift+. - Go down stairs
+            self._try_go_down_stairs()
+        elif key == pygame.K_COMMA:  # Shift+, - Go up stairs
+            self._try_go_up_stairs()
+        elif key == pygame.K_o:  # Auto-explore toggle
+            self._toggle_auto_explore()
+        elif key == pygame.K_f:  # Attack adjacent enemies
+            self._try_attack_adjacent()
+        elif key == pygame.K_r:  # Restart game
+            self._restart_game()
+    
+    def _try_move_player(self, dx: int, dy: int, current_time: float):
+        """Try to move the player."""
+        if not self.player or not self.player.can_move(current_time) or self.is_dead:
+            return
+        
+        # Cancel auto-explore on manual movement
+        if self.auto_explore_active:
+            self.auto_explore_active = False
+            self.auto_explore_path = []
+            self.auto_explore_target = None
+            self.add_to_log("Auto-explore cancelled", (255, 255, 255))
+        
+        # Cancel click navigation on manual movement
+        if self.click_navigation_active:
+            self.click_navigation_active = False
+            self.click_path = []
+            self.click_target = None
+            self.add_to_log("Click navigation cancelled", (255, 255, 255))
+        
+        new_x = self.player.x + dx
+        new_y = self.player.y + dy
+        
+        # Check if movement is valid
+        can_move = False
+        if self.current_area == GameArea.TOWN:
+            can_move = self.town.can_move_to(new_x, new_y)
+        else:
+            can_move = self.dungeon.can_move_to(new_x, new_y)
+        
+        if can_move:
+            # Check for enemy at destination
+            enemy_at_destination = self._get_enemy_at_position(new_x, new_y)
+            if enemy_at_destination:
+                # Attack the enemy
+                self._attack_enemy(enemy_at_destination)
+            else:
+                # Normal movement
+                self.player.move_to(new_x, new_y, current_time)
+                self.update_camera()
+                
+                # Check for special interactions
+                self._check_special_tiles(new_x, new_y)
+        else:
+            self.add_to_log("You can't move there!", (255, 100, 100))
+    
+    def _try_attack_adjacent(self):
+        """Try to attack an adjacent enemy."""
+        if not self.player or self.current_area != GameArea.DUNGEON or self.is_dead:
+            return
+        
+        # Check all 8 adjacent positions for enemies
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                
+                enemy = self._get_enemy_at_position(self.player.x + dx, self.player.y + dy)
+                if enemy:
+                    self._attack_enemy(enemy)
+                    return
+        
+        # No adjacent enemies found
+        self.add_to_log("No enemies adjacent to attack!", (255, 255, 100))
+    
+    def _try_activate(self):
+        """Try to activate something at current position."""
+        if not self.player:
+            return
+        
+        x, y = self.player.x, self.player.y
+        
+        if self.current_area == GameArea.TOWN:
+            cell = self.town.get_cell(x, y)
+            if cell == CellType.DUNGEON_ENTRANCE:
+                self._enter_dungeon()
+            elif cell == CellType.TOWN_DOOR:
+                self.add_to_log("You enter the building.", (255, 255, 100))
+            
+            # Check for NPC interaction
+            npc = self.town.get_npc_at(x, y)
+            if npc:
+                self._talk_to_npc(npc)
+        else:
+            cell = self.dungeon.get_cell(x, y)
+            if cell == CellType.STAIRCASE:
+                self._go_down_stairs()
+            elif cell == CellType.CHEST:
+                self._open_chest()
+    
+    def _enter_dungeon(self):
+        """Enter the dungeon from town."""
+        self.add_to_log("You descend into the dark dungeon...", (200, 200, 200))
+        
+        # Save town data before entering dungeon
+        self._save_town_data()
+        
+        self.current_area = GameArea.DUNGEON
+        self.dungeon_level = 1
+        
+        # Try to restore level 1 data, if not found create new level
+        if not self._restore_level_data(self.dungeon_level):
+            # Clear level-specific data for new dungeon
+            self._clear_level_data_for_new_level()
+            
+            self.dungeon = Dungeon(50, 40, self.dungeon_level)
+            
+            # Place player at staircase up position (stairs going up)
+            if self.dungeon.staircase_up_pos:
+                self.player.x, self.player.y = self.dungeon.staircase_up_pos
+                print(f"DEBUG: EMERGED at stairs up: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"EMERGED at stairs up: ({self.player.x}, {self.player.y})", (0, 255, 255))
+            else:
+                # Fallback to start position
+                self.player.x, self.player.y = self.dungeon.start_pos
+                print(f"DEBUG: EMERGED at start pos: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"EMERGED at start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
+            self.update_camera()
+            
+            # Spawn enemies
+            self.enemy_manager.spawn_enemies_in_dungeon(
+                self.dungeon, 
+                player_start_pos=self.dungeon.start_pos,
+                dungeon_level=self.dungeon_level
+            )
+        else:
+            # Restored level, place player at staircase up position (stairs going up)
+            if self.dungeon.staircase_up_pos:
+                self.player.x, self.player.y = self.dungeon.staircase_up_pos
+                print(f"DEBUG: EMERGED at stairs up: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"EMERGED at stairs up: ({self.player.x}, {self.player.y})", (0, 255, 255))
+            else:
+                # Fallback to start position
+                self.player.x, self.player.y = self.dungeon.start_pos
+                print(f"DEBUG: EMERGED at start pos: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"EMERGED at start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
+            self.update_camera()
+        
+        self.add_to_log(f"Entered dungeon level {self.dungeon_level}!", (255, 200, 100))
+        self.add_to_log("The air is thick with danger...", (255, 100, 100))
+        self.add_to_log("Find the stairs to go deeper!", (255, 255, 100))
+    
+    def _go_down_stairs(self):
+        """Go down to the next dungeon level."""
+        if self.dungeon_level >= self.max_dungeon_level:
+            self.add_to_log("You have reached the deepest level!", (255, 255, 100))
+            self.add_to_log("The final boss awaits...", (255, 100, 100))
+            return
+        
+        self.add_to_log("You descend deeper into the dungeon...", (200, 200, 200))
+        
+        # Save current level data
+        self._save_level_data(self.dungeon_level)
+        
+        self.dungeon_level += 1
+        
+        # Try to restore level data, if not found create new level
+        if not self._restore_level_data(self.dungeon_level):
+            # Clear level-specific data for new level
+            self._clear_level_data_for_new_level()
+            
+            self.dungeon = Dungeon(50, 40, self.dungeon_level)
+            
+            # Place player at staircase up position (stairs going up)
+            if self.dungeon.staircase_up_pos:
+                self.player.x, self.player.y = self.dungeon.staircase_up_pos
+                print(f"DEBUG: DESCENDED to stairs up: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"DESCENDED to stairs up: ({self.player.x}, {self.player.y})", (0, 255, 255))
+            else:
+                # Fallback to start position
+                self.player.x, self.player.y = self.dungeon.start_pos
+                print(f"DEBUG: DESCENDED to start pos: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"DESCENDED to start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
+            self.update_camera()
+            
+            # Spawn enemies
+            self.enemy_manager.spawn_enemies_in_dungeon(
+                self.dungeon,
+                player_start_pos=self.dungeon.start_pos,
+                dungeon_level=self.dungeon_level
+            )
+        else:
+            # Restored level, place player at staircase up position (coming from above)
+            if self.dungeon.staircase_up_pos:
+                self.player.x, self.player.y = self.dungeon.staircase_up_pos
+                print(f"DEBUG: DESCENDED to stairs up: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"DESCENDED to stairs up: ({self.player.x}, {self.player.y})", (0, 255, 255))
+            else:
+                # Fallback to start position
+                self.player.x, self.player.y = self.dungeon.start_pos
+                print(f"DEBUG: DESCENDED to start pos: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"DESCENDED to start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
+            self.update_camera()
+        
+        self.add_to_log(f"Descended to dungeon level {self.dungeon_level}!", (255, 200, 100))
+        self.add_to_log("The darkness grows deeper...", (100, 100, 200))
+        
+        # Level-specific messages
+        if self.dungeon_level == 2:
+            self.add_to_log("You hear the skittering of spiders...", (150, 100, 150))
+        elif self.dungeon_level == 3:
+            self.add_to_log("Goblin warrens stretch ahead...", (100, 150, 100))
+        elif self.dungeon_level == 4:
+            self.add_to_log("Ancient magic permeates the air...", (200, 100, 200))
+        elif self.dungeon_level == 5:
+            self.add_to_log("You have reached the deepest depths!", (255, 100, 100))
+    
+    def _try_go_down_stairs(self):
+        """Try to go down stairs - only works if standing on stairs."""
+        if self.current_area == GameArea.TOWN:
+            # Check if standing on dungeon entrance in town
+            cell = self.town.get_cell(self.player.x, self.player.y)
+            if cell == CellType.DUNGEON_ENTRANCE:
+                print(f"DEBUG: Using village stairs at ({self.player.x}, {self.player.y}) to enter dungeon")
+                self._enter_dungeon()
+            else:
+                self.add_to_log("You need to stand on the dungeon entrance!", (255, 255, 100))
+        elif self.current_area == GameArea.DUNGEON:
+            # Check if standing on stairs down in dungeon
+            if (self.dungeon.staircase_pos and 
+                (self.player.x, self.player.y) == self.dungeon.staircase_pos):
+                print(f"DEBUG: Using dungeon stairs down at ({self.player.x}, {self.player.y}) to go to level {self.dungeon_level + 1}")
+                self._go_down_stairs()
+            else:
+                self.add_to_log("You need to stand on the stairs down to go down!", (255, 255, 100))
+        else:
+            self.add_to_log("You can only use stairs in town or dungeon!", (255, 255, 100))
+    
+    def _try_go_up_stairs(self):
+        """Try to go up stairs - only works if standing on stairs up."""
+        if self.current_area != GameArea.DUNGEON:
+            self.add_to_log("You can only use stairs in the dungeon!", (255, 255, 100))
+            return
+            
+        # Check if standing on staircase up position
+        if (self.dungeon.staircase_up_pos and 
+            (self.player.x, self.player.y) == self.dungeon.staircase_up_pos):
+            if self.dungeon_level <= 1:
+                print(f"DEBUG: Using dungeon stairs up at ({self.player.x}, {self.player.y}) to return to village")
+            else:
+                print(f"DEBUG: Using dungeon stairs up at ({self.player.x}, {self.player.y}) to go to level {self.dungeon_level - 1}")
+            self._go_up_stairs()
+        else:
+            self.add_to_log("You need to stand on the stairs up to go up!", (255, 255, 100))
+    
+    def _go_up_stairs(self):
+        """Go up to the previous dungeon level or return to town."""
+        if self.dungeon_level <= 1:
+            # Going up from level 1 returns to town
+            self.add_to_log("You climb up to the surface...", (200, 200, 200))
+            
+            # Save current level data
+            self._save_level_data(self.dungeon_level)
+            
+            # Clear level-specific data and return to town
+            self._clear_level_data()
+            self.current_area = GameArea.TOWN
+            
+            # Restore town data
+            self._restore_town_data()
+            
+            # Place player exactly on dungeon entrance stairs
+            stairs_x, stairs_y = self.town.dungeon_entrance
+            self.player.x, self.player.y = stairs_x, stairs_y
+            self.update_camera()
+            self.add_to_log("Welcome back to town!", (100, 255, 100))
+            print(f"DEBUG: Standing on stairs at ({stairs_x}, {stairs_y})")
+            self.add_to_log(f"Standing on stairs at ({stairs_x}, {stairs_y})", (255, 255, 0))
+            return
+        
+        self.add_to_log("You climb up to the previous level...", (200, 200, 200))
+        
+        # Save current level data
+        self._save_level_data(self.dungeon_level)
+        
+        self.dungeon_level -= 1
+        
+        # Restore level data (should always exist for going up)
+        if self._restore_level_data(self.dungeon_level):
+            # Restored level, place player at staircase position (coming from below)
+            if self.dungeon.staircase_pos:
+                self.player.x, self.player.y = self.dungeon.staircase_pos
+                print(f"DEBUG: ASCENDED to stairs down: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"ASCENDED to stairs down: ({self.player.x}, {self.player.y})", (0, 255, 255))
+            else:
+                # Fallback to start position
+                self.player.x, self.player.y = self.dungeon.start_pos
+                print(f"DEBUG: ASCENDED to start pos: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"ASCENDED to start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
+            self.update_camera()
+        else:
+            # Fallback: create new level (shouldn't happen)
+            self._clear_level_data_for_new_level()
+            self.dungeon = Dungeon(50, 40, self.dungeon_level)
+            
+            # Place player at staircase position (stairs going down)
+            if self.dungeon.staircase_pos:
+                self.player.x, self.player.y = self.dungeon.staircase_pos
+                print(f"DEBUG: ASCENDED to stairs down: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"ASCENDED to stairs down: ({self.player.x}, {self.player.y})", (0, 255, 255))
+            else:
+                # Fallback to start position
+                self.player.x, self.player.y = self.dungeon.start_pos
+                print(f"DEBUG: ASCENDED to start pos: ({self.player.x}, {self.player.y})")
+                self.add_to_log(f"ASCENDED to start pos: ({self.player.x}, {self.player.y})", (255, 255, 0))
+            self.update_camera()
+            
+            # Spawn enemies
+            self.enemy_manager.spawn_enemies_in_dungeon(
+                self.dungeon,
+                player_start_pos=self.dungeon.start_pos,
+                dungeon_level=self.dungeon_level
+            )
+        
+        self.add_to_log(f"Ascended to dungeon level {self.dungeon_level}!", (255, 200, 100))
+        self.add_to_log("The air feels lighter here...", (100, 200, 100))
+    
+    def _return_to_town(self):
+        """Return to town from the dungeon."""
+        if self.current_area == GameArea.DUNGEON:
+            self.add_to_log("You make your way back to town...", (200, 200, 200))
+            
+            # Save current level data before leaving
+            self._save_level_data(self.dungeon_level)
+            
+            # Clear level-specific data (preserve town data)
+            self._clear_level_data()
+            
+            self.current_area = GameArea.TOWN
+            
+            # Restore town data
+            self._restore_town_data()
+            
+            # Place player exactly on dungeon entrance stairs
+            stairs_x, stairs_y = self.town.dungeon_entrance
+            self.player.x, self.player.y = stairs_x, stairs_y
+            self.update_camera()
+            self.add_to_log("Welcome back to town!", (100, 255, 100))
+            print(f"DEBUG: Standing on stairs at ({stairs_x}, {stairs_y})")
+            self.add_to_log(f"Standing on stairs at ({stairs_x}, {stairs_y})", (255, 255, 0))
+        else:
+            self.add_to_log("You're already in town!", (255, 255, 100))
+    
+    def _open_chest(self):
+        """Open a chest and get loot."""
+        # Simple loot generation
+        loot_types = ["gold", "health potion", "weapon", "armour"]
+        loot = random.choice(loot_types)
+        
+        if loot == "gold":
+            amount = random.randint(10, 50)
+            self.add_to_log(f"Found {amount} gold!", (255, 255, 100))
+        elif loot == "health potion":
+            self.player.character.heal(20)
+            self.add_to_log("Found a health potion! +20 HP", (100, 255, 100))
+        else:
+            self.add_to_log(f"Found {loot}!", (200, 200, 255))
+    
+    def _talk_to_npc(self, npc: NPC):
+        """Talk to an NPC."""
+        dialogue = npc.get_dialogue()
+        self.add_to_log(f"{npc.name}: {dialogue}", (255, 255, 200))
+        
+        # Special NPC actions
+        if npc.npc_type == "shopkeeper":
+            self.add_to_log("(Shop functionality coming soon!)", (200, 200, 200))
+        elif npc.npc_type == "innkeeper":
+            self.add_to_log("(Rest functionality coming soon!)", (200, 200, 200))
+        elif npc.npc_type == "blacksmith":
+            self.add_to_log("(Repair functionality coming soon!)", (200, 200, 200))
+        elif npc.npc_type == "priest":
+            self.add_to_log("(Blessing functionality coming soon!)", (200, 200, 200))
+    
+    def _check_special_tiles(self, x: int, y: int):
+        """Check for special tile interactions."""
+        if self.current_area == GameArea.DUNGEON:
+            cell = self.dungeon.get_cell(x, y)
+            if cell == CellType.HP_PICKUP:
+                self.player.character.heal(10)
+                self.add_to_log("Found health pickup! +10 HP", (100, 255, 100))
+                # Remove the pickup
+                self.dungeon.grid[y][x] = CellType.FLOOR
+    
+    def _show_character_sheet(self):
+        """Show character information."""
+        if self.player:
+            char = self.player.character
+            self.add_to_log(f"=== {char.name} (Level {char.level}) ===", (255, 255, 100))
+            self.add_to_log(f"HP: {char.current_hp}/{char.max_hp}", (255, 100, 100))
+            self.add_to_log(f"Experience: {char.experience}", (100, 100, 255))
+    
+    def _show_inventory(self):
+        """Show inventory."""
+        if self.player:
+            char = self.player.character
+            self.add_to_log("=== Inventory ===", (255, 255, 100))
+            if char.inventory.items:
+                for item in char.inventory.items[:5]:  # Show first 5 items
+                    self.add_to_log(f"- {item.name}", (200, 200, 200))
+            else:
+                self.add_to_log("Empty", (150, 150, 150))
+    
+    def update(self, dt: float):
+        """Update game state."""
+        if self.state_manager.current_state != GameState.PLAYING:
+            return
+        
+        # Update fog of war
+        self._update_fog_of_war()
+        
+        # Update auto-explore
+        self._update_auto_explore()
+        
+        # Update click navigation
+        self._update_click_navigation()
+        
+        # Update enemies
+        if self.current_area == GameArea.DUNGEON and self.player:
+            current_time = pygame.time.get_ticks() / 1000.0
+            attacking_enemies = self.enemy_manager.update_all_enemies(
+                current_time, 
+                self.player.x, 
+                self.player.y, 
+                self.dungeon
+            )
+            
+            # Handle enemy attacks
+            for enemy in attacking_enemies:
+                self._enemy_attack_player(enemy)
+    
+    def render(self):
+        """Render the game."""
+        if self.state_manager.current_state != GameState.PLAYING:
+            self.state_manager.render()
+            return
+        
+        # Clear screen
+        self.screen.fill((20, 20, 30))
+        
+        # Draw frame around gameplay area
+        self._render_game_frame()
+        
+        if self.current_area == GameArea.TOWN:
+            self._render_town()
+        else:
+            self._render_dungeon()
+        
+        # Render player
+        if self.player:
+            self._render_player()
+        
+        # Render enemies
+        if self.current_area == GameArea.DUNGEON:
+            self._render_enemies()
+        
+        # Render NPCs
+        if self.current_area == GameArea.TOWN:
+            self._render_npcs()
+            self._render_painted_sprites()
+        
+        # Render UI
+        self._render_ui()
+    
+    def _render_game_frame(self):
+        """Render a frame around the gameplay area."""
+        frame_color = (100, 100, 100)
+        frame_thickness = 2
+        
+        # Calculate gameplay area (screen height - 60 pixels for bottom frame)
+        gameplay_height = self.screen.get_height() - 60
+        
+        # Draw frame around gameplay area
+        pygame.draw.rect(self.screen, frame_color, 
+                        (0, 0, self.screen.get_width(), gameplay_height), 
+                        frame_thickness)
+        
+        # Draw bottom frame area
+        pygame.draw.rect(self.screen, (40, 40, 50), 
+                        (0, gameplay_height, self.screen.get_width(), 60))
+    
+    def _render_town(self):
+        """Render the town using sprites."""
+        for y in range(self.town.height):
+            for x in range(self.town.width):
+                # Only render if tile is visible or explored
+                if not (self._is_tile_visible(x, y) or self._is_tile_explored(x, y)):
+                    continue
+                    
+                screen_x = (x - self.camera_x) * self.tile_size
+                screen_y = (y - self.camera_y) * self.tile_height
+                
+                if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+                    screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                    
+                    cell = self.town.get_cell(x, y)
+                    # Always show walls if explored, even if not currently visible
+                    if cell in [CellType.TOWN_WALL, CellType.TOWN_BUILDING] and self._is_tile_explored(x, y):
+                        self._render_cell_with_sprite(cell, screen_x, screen_y, x, y, dimmed=not self._is_tile_visible(x, y))
+                    elif self._is_tile_visible(x, y):
+                        self._render_cell_with_sprite(cell, screen_x, screen_y, x, y)
+                    elif self._is_tile_explored(x, y):
+                        # Show explored areas as dimmed
+                        self._render_cell_with_sprite(cell, screen_x, screen_y, x, y, dimmed=True)
+        
+        # Render click navigation path
+        self._render_click_path()
+    
+    def _render_dungeon(self):
+        """Render the dungeon using sprites."""
+        for y in range(self.dungeon.height):
+            for x in range(self.dungeon.width):
+                # Only render if tile is visible or explored
+                if not (self._is_tile_visible(x, y) or self._is_tile_explored(x, y)):
+                    continue
+                    
+                screen_x = (x - self.camera_x) * self.tile_size
+                screen_y = (y - self.camera_y) * self.tile_height
+                
+                if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+                    screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                    
+                    cell = self.dungeon.get_cell(x, y)
+                    # Always show walls if explored, even if not currently visible
+                    if cell == CellType.WALL and self._is_tile_explored(x, y):
+                        self._render_cell_with_sprite(cell, screen_x, screen_y, x, y, dimmed=not self._is_tile_visible(x, y))
+                    elif self._is_tile_visible(x, y):
+                        self._render_cell_with_sprite(cell, screen_x, screen_y, x, y)
+                    elif self._is_tile_explored(x, y):
+                        # Show explored areas as dimmed
+                        self._render_cell_with_sprite(cell, screen_x, screen_y, x, y, dimmed=True)
+        
+        # Render click navigation path
+        self._render_click_path()
+    
+    def _render_cell_with_sprite(self, cell: CellType, screen_x: int, screen_y: int, x: int = None, y: int = None, dimmed: bool = False):
+        """Render a cell using sprites or fallback to colors."""
+        # Try to use sprites first
+        sprite_name = self._get_cell_sprite(cell, x, y)
+        if sprite_name and self.sprite_manager.sprite_system.get_sprite(sprite_name):
+            # Draw sprite without centering offsets for tighter layout
+            # Dim the sprite if requested
+            tint_color = (0.5, 0.5, 0.5) if dimmed else None
+            self.sprite_manager.sprite_system.draw_sprite(
+                self.screen, sprite_name, screen_x, screen_y, 
+                scale=1, prevent_overlap=False, tint_color=tint_color
+            )
+        else:
+            # Fallback to color rendering
+            color = self._get_cell_color(cell)
+            if dimmed:
+                color = tuple(int(c * 0.5) for c in color)
+            pygame.draw.rect(self.screen, color, 
+                           (screen_x, screen_y, self.tile_size, self.tile_height))
+    
+    def _get_cell_sprite(self, cell: CellType, x: int = None, y: int = None) -> Optional[str]:
+        """Get sprite name for a cell type."""
+        # Use cached sprite if available
+        if x is not None and y is not None and (x, y) in self.tile_sprites:
+            return self.tile_sprites[(x, y)]
+        
+        # Get sprite for cell type (random for walls and floors)
+        if cell in [CellType.WALL, CellType.TOWN_WALL, CellType.TOWN_BUILDING]:
+            sprite_name = self._get_random_wall_sprite()
+        elif cell in [CellType.FLOOR, CellType.TOWN_FLOOR]:
+            sprite_name = self._get_random_floor_sprite()
+        else:
+            # Static sprites for other cell types
+            base_sprites = {
+                CellType.DOOR: "window",
+                CellType.STAIRCASE: "stairs down",
+                CellType.CHEST: "prison gate",  # Use prison gate as chest
+                CellType.HP_PICKUP: "bubbles 1",  # Use bubbles as health pickup
+                CellType.TOWN_DOOR: "window",
+                CellType.DUNGEON_ENTRANCE: "stairs down",
+            }
+            sprite_name = base_sprites.get(cell)
+        
+        # Cache the sprite for consistency
+        if x is not None and y is not None and sprite_name:
+            self.tile_sprites[(x, y)] = sprite_name
+            
+        return sprite_name
+    
+    def _get_random_wall_sprite(self) -> str:
+        """Get a random wall sprite."""
+        wall_sprites = ["Wall", "wall dmg 1", "wall dmg 2", "wall dmg 3", "wall dmg 4", "wall dmg 5", "wall dmg 6"]
+        return random.choice(wall_sprites)
+    
+    def _get_random_floor_sprite(self) -> str:
+        """Get a random floor sprite."""
+        floor_sprites = ["floor", "floor2"]
+        return random.choice(floor_sprites)
+    
+    def _get_cell_color(self, cell: CellType) -> Tuple[int, int, int]:
+        """Get color for a cell type (fallback when sprites not available)."""
+        colors = {
+            CellType.WALL: (100, 100, 100),
+            CellType.FLOOR: (50, 50, 50),
+            CellType.DOOR: (139, 69, 19),
+            CellType.STAIRCASE: (200, 200, 100),
+            CellType.CHEST: (255, 215, 0),
+            CellType.HP_PICKUP: (255, 100, 100),
+            CellType.TOWN_FLOOR: (100, 150, 100),
+            CellType.TOWN_WALL: (150, 100, 100),
+            CellType.TOWN_DOOR: (139, 69, 19),
+            CellType.TOWN_BUILDING: (120, 80, 80),
+            CellType.DUNGEON_ENTRANCE: (100, 50, 150),
+        }
+        return colors.get(cell, (0, 0, 0))
+    
+    def _render_player(self):
+        """Render the player using sprites."""
+        screen_x = (self.player.x - self.camera_x) * self.tile_size
+        screen_y = (self.player.y - self.camera_y) * self.tile_height
+        
+        if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+            screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+            
+            # Try to use player sprite
+            player_sprite = self._get_player_sprite()
+            if player_sprite and self.sprite_manager.sprite_system.get_sprite(player_sprite):
+                # Draw player sprite without centering offsets
+                self.sprite_manager.sprite_system.draw_sprite(
+                    self.screen, player_sprite, screen_x, screen_y, 
+                    scale=1, prevent_overlap=False
+                )
+            else:
+                # Fallback to colored circle
+                center_x = screen_x + self.tile_size // 2
+                center_y = screen_y + self.tile_height // 2
+                pygame.draw.circle(self.screen, (100, 150, 255), (center_x, center_y), self.tile_size // 3)
+    
+    
+    def _get_player_sprite(self) -> str:
+        """Get player sprite - same avatar for all character classes."""
+        return "avatar left"
+    
+    def _render_enemies(self):
+        """Render enemies using sprites."""
+        for i, enemy in enumerate(self.enemy_manager.get_living_enemies()):
+            enemy_id = f"enemy_{i}_{enemy.enemy_type.name}_{enemy.x}_{enemy.y}"
+            # Render if enemy is visible or has a last known position
+            if not self._is_tile_visible(enemy.x, enemy.y) and enemy_id not in self.last_known_positions:
+                continue
+                
+            # Use current position if visible, otherwise use last known position
+            if self._is_tile_visible(enemy.x, enemy.y):
+                render_x, render_y = enemy.x, enemy.y
+            else:
+                render_x, render_y, _ = self.last_known_positions[enemy_id]
+            
+            screen_x = (render_x - self.camera_x) * self.tile_size
+            screen_y = (render_y - self.camera_y) * self.tile_height
+            
+            if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+                screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                
+                # Try to use enemy sprite
+                enemy_sprite = self._get_enemy_sprite(enemy.enemy_type)
+                if enemy_sprite and self.sprite_manager.sprite_system.get_sprite(enemy_sprite):
+                    # Draw enemy sprite without centering offsets
+                    # Dim the sprite if using last known position
+                    tint_color = (0.5, 0.5, 0.5) if not self._is_tile_visible(enemy.x, enemy.y) else None
+                    
+                    # Add damage flash effect
+                    if hasattr(enemy, 'damage_flash') and enemy.damage_flash > 0:
+                        flash_intensity = enemy.damage_flash
+                        if tint_color:
+                            tint_color = (1.0, 0.3, 0.3)  # Red flash
+                        else:
+                            tint_color = (1.0, 0.3, 0.3)  # Red flash
+                    
+                    self.sprite_manager.sprite_system.draw_sprite(
+                        self.screen, enemy_sprite, screen_x, screen_y, 
+                        scale=1, prevent_overlap=False, tint_color=tint_color
+                    )
+                else:
+                    # Fallback to colored circle
+                    center_x = screen_x + self.tile_size // 2
+                    center_y = screen_y + self.tile_height // 2
+                    # Dim the circle if using last known position
+                    color = (127, 50, 50) if not self._is_tile_visible(enemy.x, enemy.y) else (255, 100, 100)
+                    
+                    # Add damage flash effect
+                    if hasattr(enemy, 'damage_flash') and enemy.damage_flash > 0:
+                        flash_intensity = enemy.damage_flash
+                        color = (255, int(100 * (1 - flash_intensity)), int(100 * (1 - flash_intensity)))
+                    
+                    pygame.draw.circle(self.screen, color, (center_x, center_y), self.tile_size // 4)
+    
+    def _get_enemy_sprite(self, enemy_type: EnemyType) -> str:
+        """Get enemy sprite based on enemy type."""
+        enemy_sprites = {
+            EnemyType.CHICKEN: "undergrowth 3",
+            EnemyType.FROG: "lily pad 1",
+            EnemyType.SNAKE: "branch",
+            EnemyType.BIRD: "grass flowers",
+            EnemyType.SPIDER: "mushrooms",
+            EnemyType.GOBLIN: "tree dead"
+        }
+        return enemy_sprites.get(enemy_type, "tree dead")
+    
+    def _render_npcs(self):
+        """Render NPCs in the town."""
+        for npc in self.town.npcs:
+            npc_id = f"npc_{npc.name}_{npc.x}_{npc.y}"
+            # Render if NPC is visible or has a last known position
+            if not self._is_tile_visible(npc.x, npc.y) and npc_id not in self.last_known_positions:
+                continue
+                
+            # Use current position if visible, otherwise use last known position
+            if self._is_tile_visible(npc.x, npc.y):
+                render_x, render_y = npc.x, npc.y
+            else:
+                render_x, render_y, _ = self.last_known_positions[npc_id]
+                
+            screen_x = (render_x - self.camera_x) * self.tile_size
+            screen_y = (render_y - self.camera_y) * self.tile_height
+            
+            if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+                screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                
+                # Try to use NPC sprite
+                npc_sprite = self._get_npc_sprite(npc.npc_type)
+                if npc_sprite and self.sprite_manager.sprite_system.get_sprite(npc_sprite):
+                    # Draw NPC sprite without centering offsets
+                    # Dim the sprite if using last known position
+                    tint_color = (0.5, 0.5, 0.5) if not self._is_tile_visible(npc.x, npc.y) else None
+                    self.sprite_manager.sprite_system.draw_sprite(
+                        self.screen, npc_sprite, screen_x, screen_y, 
+                        scale=1, prevent_overlap=False, tint_color=tint_color
+                    )
+                else:
+                    # Fallback to colored circle
+                    center_x = screen_x + self.tile_size // 2
+                    center_y = screen_y + self.tile_height // 2
+                    # Dim the circle if using last known position
+                    color = (127, 127, 50) if not self._is_tile_visible(npc.x, npc.y) else (255, 255, 100)
+                    pygame.draw.circle(self.screen, color, (center_x, center_y), self.tile_size // 4)
+    
+    def _render_painted_sprites(self):
+        """Render painted sprites in the town."""
+        for (grid_x, grid_y), sprite_name in self.town.painted_sprites.items():
+            screen_x = (grid_x - self.camera_x) * self.tile_size
+            screen_y = (grid_y - self.camera_y) * self.tile_height
+            
+            if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+                screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                
+                if self.sprite_manager.sprite_system.get_sprite(sprite_name):
+                    # Draw painted sprite without centering offsets
+                    self.sprite_manager.sprite_system.draw_sprite(
+                        self.screen, sprite_name, screen_x, screen_y, 
+                        scale=1, prevent_overlap=False
+                    )
+    
+    def _get_npc_sprite(self, npc_type: str) -> str:
+        """Get NPC sprite based on NPC type."""
+        npc_sprites = {
+            "shopkeeper": "big grass",
+            "innkeeper": "grass flowers", 
+            "blacksmith": "shrub",
+            "priest": "lily pad 2"
+        }
+        return npc_sprites.get(npc_type, "big grass")
+    
+    def _render_ui(self):
+        """Render the user interface."""
+        # Game log
+        y_offset = 10
+        for message, color in self.log_messages[-5:]:  # Show last 5 messages
+            text = self.small_font.render(message, True, color)
+            self.screen.blit(text, (10, y_offset))
+            y_offset += 20
+        
+        # Player stats and health bar
+        if self.player:
+            char = self.player.character
+            stats_text = f"Level: {char.level} | Area: {self.current_area.value.title()}"
+            if self.current_area == GameArea.DUNGEON:
+                stats_text += f" | Dungeon Level: {self.dungeon_level}"
+            
+            text = self.font.render(stats_text, True, (255, 255, 255))
+            self.screen.blit(text, (10, self.screen.get_height() - 60))
+            
+            # Health bar
+            self._render_health_bar(char.current_hp, char.max_hp, 10, self.screen.get_height() - 40)
+        
+        # Controls
+        controls = "WASD: Move | F: Attack | Enter: Activate | C: Character | I: Inventory | O: Auto-explore | ESC: Quit"
+        text = self.small_font.render(controls, True, (200, 200, 200))
+        self.screen.blit(text, (10, self.screen.get_height() - 20))
+    
+    def _render_health_bar(self, current_hp: int, max_hp: int, x: int, y: int):
+        """Render a health bar."""
+        bar_width = 200
+        bar_height = 20
+        
+        # Background (red)
+        pygame.draw.rect(self.screen, (100, 0, 0), (x, y, bar_width, bar_height))
+        
+        # Health (green)
+        health_percentage = current_hp / max_hp if max_hp > 0 else 0
+        health_width = int(bar_width * health_percentage)
+        pygame.draw.rect(self.screen, (0, 255, 0), (x, y, health_width, bar_height))
+        
+        # Border
+        pygame.draw.rect(self.screen, (255, 255, 255), (x, y, bar_width, bar_height), 2)
+        
+        # Text
+        hp_text = f"HP: {current_hp}/{max_hp}"
+        text = self.small_font.render(hp_text, True, (255, 255, 255))
+        text_x = x + (bar_width - text.get_width()) // 2
+        text_y = y + (bar_height - text.get_height()) // 2
+        self.screen.blit(text, (text_x, text_y))
+    
+    def run(self):
+        """Main game loop."""
+        while self.running:
+            dt = self.clock.tick(60) / 1000.0  # Delta time in seconds
+            
+            # Handle events
+            for event in pygame.event.get():
+                self.handle_input(event)
+            
+            # Update game
+            self.update(dt)
+            
+            # Render
+            self.render()
+            pygame.display.flip()
+        
+        pygame.quit()
+        sys.exit()
+    
+    def _handle_mouse_click(self, pos):
+        """Handle mouse click for pathfinding."""
+        if not self.player or self.is_dead:
+            return
+        
+        # Convert screen coordinates to tile coordinates
+        tile_x, tile_y = self._screen_to_tile_coords(pos[0], pos[1])
+        
+        # Debug logging
+        print(f"DEBUG: Click at screen ({pos[0]}, {pos[1]}) -> tile ({tile_x}, {tile_y})")
+        
+        # Check if the click is within valid bounds
+        if self.current_area == GameArea.TOWN:
+            if not (0 <= tile_x < self.town.width and 0 <= tile_y < self.town.height):
+                return
+        elif self.current_area == GameArea.DUNGEON:
+            if not (0 <= tile_x < self.dungeon.width and 0 <= tile_y < self.dungeon.height):
+                return
+        
+        # Don't check walkability here - let pathfinding handle it
+        
+        # Cancel auto-explore if active
+        if self.auto_explore_active:
+            self.auto_explore_active = False
+            self.auto_explore_path = []
+            self.auto_explore_target = None
+        
+        # Set up click navigation
+        self.click_target = (tile_x, tile_y)
+        self.click_navigation_active = True
+        
+        # Calculate path to target
+        start = (self.player.x, self.player.y)
+        target = (tile_x, tile_y)
+        
+        if self.current_area == GameArea.TOWN:
+            self.click_path = self._find_path_town(start, target)
+        else:
+            self.click_path = self._find_path(start, target)
+        
+        if not self.click_path:
+            self.add_to_log("No path found!", (255, 100, 100))
+            self.click_navigation_active = False
+            self.click_target = None
+        else:
+            final_target = self.click_path[-1] if self.click_path else (tile_x, tile_y)
+            print(f"DEBUG: Path found to ({final_target[0]}, {final_target[1]}) with {len(self.click_path)} steps")
+            self.add_to_log(f"Pathing to ({final_target[0]}, {final_target[1]})", (100, 255, 100))
+    
+    def _screen_to_tile_coords(self, screen_x, screen_y):
+        """Convert screen coordinates to tile coordinates."""
+        # Account for camera offset
+        world_x = screen_x + self.camera_x
+        world_y = screen_y + self.camera_y
+        
+        # Convert to tile coordinates
+        tile_x = world_x // self.tile_size
+        tile_y = world_y // self.tile_height
+        
+        return tile_x, tile_y
+    
+    def _find_path_unified(self, start, target, is_town=True, allow_unexplored=False):
+        """Unified A* pathfinding for all cases."""
+        if start == target:
+            return []
+        
+        import heapq
+        
+        def heuristic(pos):
+            """Distance heuristic."""
+            if is_town:
+                return abs(pos[0] - target[0]) + abs(pos[1] - target[1])  # Manhattan
+            else:
+                dx = abs(pos[0] - target[0])
+                dy = abs(pos[1] - target[1])
+                return (dx * dx + dy * dy) ** 0.5  # Euclidean
+        
+        def get_neighbors(pos):
+            """Get valid neighboring positions."""
+            x, y = pos
+            if is_town:
+                directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]  # 4-directional
+            else:
+                directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]  # 8-directional
+            
+            neighbors = []
+            
+            for dx, dy in directions:
+                new_x, new_y = x + dx, y + dy
+                new_pos = (new_x, new_y)
+                
+                # Check bounds and walkability
+                if is_town:
+                    if (0 <= new_x < self.town.width and 
+                        0 <= new_y < self.town.height and
+                        self.town.can_move_to(new_x, new_y)):
+                        # Check fog of war only if not allowing unexplored
+                        if allow_unexplored or self._is_tile_explored(new_x, new_y):
+                            neighbors.append(new_pos)
+                else:
+                    if (0 <= new_x < self.dungeon.width and 
+                        0 <= new_y < self.dungeon.height and
+                        self.dungeon.can_move_to(new_x, new_y)):
+                        # Check fog of war only if not allowing unexplored
+                        if allow_unexplored or self._is_tile_explored(new_x, new_y):
+                            neighbors.append(new_pos)
+            
+            return neighbors
+        
+        def get_move_cost(current, neighbor):
+            """Get cost of moving from current to neighbor."""
+            if is_town:
+                return 1.0  # All moves cost 1 in town
+            else:
+                # Diagonal moves cost more in dungeon
+                dx = abs(neighbor[0] - current[0])
+                dy = abs(neighbor[1] - current[1])
+                return 1.4 if dx == 1 and dy == 1 else 1.0
+        
+        # A* algorithm
+        open_set = [(0, start)]  # Priority queue: (f_score, position)
+        came_from = {}
+        g_score = {start: 0}
+        f_score = {start: heuristic(start)}
+        visited = set()
+        
+        while open_set:
+            current_f, current = heapq.heappop(open_set)
+            
+            if current in visited:
+                continue
+                
+            visited.add(current)
+            
+            if current == target:
+                # Reconstruct path
+                path = []
+                while current in came_from:
+                    path.append(current)
+                    current = came_from[current]
+                path.append(start)
+                return path[::-1]
+            
+            for neighbor in get_neighbors(current):
+                if neighbor in visited:
+                    continue
+                
+                move_cost = get_move_cost(current, neighbor)
+                tentative_g = g_score[current] + move_cost
+                
+                if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                    came_from[neighbor] = current
+                    g_score[neighbor] = tentative_g
+                    f_score[neighbor] = tentative_g + heuristic(neighbor)
+                    heapq.heappush(open_set, (f_score[neighbor], neighbor))
+        
+        # If we can't reach the exact target, try to find the closest reachable tile
+        if not allow_unexplored:
+            return self._find_closest_reachable_tile(start, target, is_town)
+        
+        return []
+    
+    def _find_closest_reachable_tile(self, start, target, is_town):
+        """Find the closest reachable tile to the target."""
+        import heapq
+        
+        def heuristic(pos):
+            """Distance to target."""
+            return abs(pos[0] - target[0]) + abs(pos[1] - target[1])
+        
+        def get_neighbors(pos):
+            """Get valid neighboring positions."""
+            x, y = pos
+            if is_town:
+                directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+            else:
+                directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+            
+            neighbors = []
+            
+            for dx, dy in directions:
+                new_x, new_y = x + dx, y + dy
+                new_pos = (new_x, new_y)
+                
+                if is_town:
+                    if (0 <= new_x < self.town.width and 
+                        0 <= new_y < self.town.height and
+                        self.town.can_move_to(new_x, new_y) and
+                        self._is_tile_explored(new_x, new_y)):
+                        neighbors.append(new_pos)
+                else:
+                    if (0 <= new_x < self.dungeon.width and 
+                        0 <= new_y < self.dungeon.height and
+                        self.dungeon.can_move_to(new_x, new_y) and
+                        self._is_tile_explored(new_x, new_y)):
+                        neighbors.append(new_pos)
+            
+            return neighbors
+        
+        # BFS to find closest reachable tile
+        queue = [(0, start)]  # (distance, position)
+        visited = {start}
+        best_tile = None
+        best_distance = float('inf')
+        
+        while queue:
+            distance, current = heapq.heappop(queue)
+            
+            if current in visited and current != start:
+                continue
+                
+            visited.add(current)
+            
+            # Check if this is closer to target
+            target_distance = abs(current[0] - target[0]) + abs(current[1] - target[1])
+            if target_distance < best_distance:
+                best_distance = target_distance
+                best_tile = current
+            
+            # Add neighbors
+            for neighbor in get_neighbors(current):
+                if neighbor not in visited:
+                    heapq.heappush(queue, (distance + 1, neighbor))
+        
+        # If we found a better tile, path to it
+        if best_tile and best_tile != start:
+            return self._find_path_unified(start, best_tile, is_town, allow_unexplored=False)
+        
+        return []
+    
+    def _find_path_town(self, start, target):
+        """Find path in town using unified pathfinding."""
+        return self._find_path_unified(start, target, is_town=True, allow_unexplored=False)
+    
+    
+    def _get_enemy_at_position(self, x: int, y: int):
+        """Get enemy at specific position, if any."""
+        if self.current_area != GameArea.DUNGEON:
+            return None
+        
+        for enemy in self.enemy_manager.enemies:
+            if enemy.is_alive and enemy.x == x and enemy.y == y:
+                return enemy
+        return None
+    
+    def _attack_enemy(self, enemy):
+        """Attack an enemy."""
+        if not self.player or not self.player.character:
+            return
+        
+        # Calculate damage
+        damage, is_critical = self.player.character.get_attack_damage()
+        
+        # Apply damage
+        enemy.hp -= damage
+        enemy.damage_flash = 1.0  # Flash effect
+        
+        # Combat message
+        if is_critical:
+            self.add_to_log(f"Critical hit! You deal {damage} damage to {enemy.enemy_type.value}!", (255, 255, 0))
+        else:
+            self.add_to_log(f"You deal {damage} damage to {enemy.enemy_type.value}!", (255, 200, 100))
+        
+        # Check if enemy dies
+        if enemy.hp <= 0:
+            enemy.is_alive = False
+            self.add_to_log(f"You killed the {enemy.enemy_type.value}!", (100, 255, 100))
+            
+            # Give experience
+            if self.player.character:
+                exp_gained = enemy.exp_value
+                level_up_messages = self.player.character.gain_experience(exp_gained)
+                self.add_to_log(f"Gained {exp_gained} experience!", (100, 255, 255))
+                
+                # Display level up messages
+                for message in level_up_messages:
+                    self.add_to_log(message, (255, 255, 0))
+        else:
+            # Enemy counter-attacks
+            self._enemy_attack_player(enemy)
+    
+    def _enemy_attack_player(self, enemy):
+        """Enemy attacks the player."""
+        if not self.player or not self.player.character:
+            return
+        
+        # Calculate enemy damage
+        enemy_damage = enemy.get_attack_damage()
+        
+        # Apply damage to player
+        self.player.character.take_damage(enemy_damage)
+        
+        # Combat message
+        self.add_to_log(f"{enemy.enemy_type.value} deals {enemy_damage} damage to you!", (255, 100, 100))
+        
+        # Check if player dies
+        if self.player.character.current_hp <= 0:
+            self._trigger_death()
+    
+    def _trigger_death(self):
+        """Trigger player death and game over."""
+        if self.is_dead:
+            return  # Already dead
+        
+        self.is_dead = True
+        self.final_score = self._calculate_score()
+        
+        # Add to high scores
+        self._add_high_score(self.final_score)
+        
+        # Set game state to game over
+        self.state_manager.current_state = GameState.GAME_OVER
+        
+        self.add_to_log("You have been defeated!", (255, 0, 0))
+        self.add_to_log(f"Final Score: {self.final_score}", (255, 255, 0))
+        self.add_to_log("Press R to restart or ESC to quit", (255, 255, 255))
+    
+    def _calculate_score(self) -> int:
+        """Calculate final score based on player progress."""
+        if not self.player or not self.player.character:
+            return 0
+        
+        char = self.player.character
+        score = 0
+        
+        # Base score from level
+        score += char.level * 100
+        
+        # Score from dungeon level reached
+        score += self.dungeon_level * 50
+        
+        # Score from experience gained
+        score += char.experience
+        
+        # Score from remaining HP (survival bonus)
+        if char.current_hp > 0:
+            score += char.current_hp * 2
+        
+        # Score from enemies defeated (approximate)
+        # This is a rough estimate based on level and dungeon depth
+        estimated_enemies = (char.level - 1) * 3 + self.dungeon_level * 2
+        score += estimated_enemies * 25
+        
+        return max(0, score)
+    
+    def _load_high_scores(self) -> list:
+        """Load high scores from file."""
+        import json
+        try:
+            with open("high_scores.json", 'r') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
+    
+    def _save_high_scores(self):
+        """Save high scores to file."""
+        import json
+        try:
+            with open("high_scores.json", 'w') as f:
+                json.dump(self.high_scores, f, indent=2)
+        except Exception as e:
+            print(f"Error saving high scores: {e}")
+    
+    def _add_high_score(self, score: int):
+        """Add a new high score."""
+        if not self.player or not self.player.character:
+            return
+        
+        # Create score entry
+        score_entry = {
+            "score": score,
+            "level": self.player.character.level,
+            "dungeon_level": self.dungeon_level,
+            "class": self.player.character.character_class.value if hasattr(self.player.character, 'character_class') else "Unknown",
+            "name": getattr(self.player.character, 'name', 'Unknown')
+        }
+        
+        # Add to high scores
+        self.high_scores.append(score_entry)
+        
+        # Sort by score (highest first) and keep top 10
+        self.high_scores.sort(key=lambda x: x["score"], reverse=True)
+        self.high_scores = self.high_scores[:10]
+        
+        # Save to file
+        self._save_high_scores()
+    
+    def _restart_game(self):
+        """Restart the game from the beginning."""
+        if self.state_manager.current_state != GameState.GAME_OVER:
+            return
+        
+        # Reset game state
+        self.is_dead = False
+        self.final_score = 0
+        self.current_area = GameArea.TOWN
+        self.dungeon_level = 1
+        
+        # Clear level data
+        self._clear_level_data()
+        
+        # Reset player
+        self.player = None
+        
+        # Reset auto-explore
+        self.auto_explore_active = False
+        self.auto_explore_path = []
+        self.auto_explore_target = None
+        
+        # Go back to class selection
+        self.state_manager.current_state = GameState.CLASS_SELECTION
+        
+        self.add_to_log("Starting new game...", (100, 255, 100))
+    
+    def _toggle_auto_explore(self):
+        """Toggle auto-explore mode."""
+        if not self.player:
+            return
+        
+        # Check if enemies are visible
+        if self._are_enemies_visible():
+            self.add_to_log("Cannot auto-explore: enemies nearby!", (255, 100, 100))
+            return
+        
+        if self.auto_explore_active:
+            self.auto_explore_active = False
+            self.auto_explore_path = []
+            self.auto_explore_target = None
+            self.add_to_log("Auto-explore disabled", (255, 255, 255))
+        else:
+            self.auto_explore_active = True
+            self._find_next_exploration_target()
+            if self.auto_explore_target:
+                self.add_to_log("Auto-explore enabled", (100, 150, 255))
+            else:
+                self.add_to_log("Auto-explore complete: all areas explored!", (100, 255, 100))
+                self.auto_explore_active = False
+    
+    def _are_enemies_visible(self):
+        """Check if any enemies are visible to the player."""
+        if not self.player:
+            return False
+        
+        player_x, player_y = self.player.x, self.player.y
+        
+        # Check all enemies
+        for enemy in self.enemy_manager.enemies:
+            if enemy.is_alive:
+                # Check if enemy is in visible tiles
+                if (enemy.x, enemy.y) in self.visible_tiles:
+                    return True
+        
+        return False
+    
+    def _find_next_exploration_target(self):
+        """Find the nearest unexplored area to target."""
+        if not self.player:
+            return
+        
+        player_x, player_y = self.player.x, self.player.y
+        unexplored_tiles = []
+        
+        # Find all unexplored floor tiles
+        if self.current_area == GameArea.TOWN:
+            for y in range(self.town.height):
+                for x in range(self.town.width):
+                    cell = self.town.get_cell(x, y)
+                    if (cell in [CellType.TOWN_FLOOR, CellType.TOWN_DOOR] and 
+                        (x, y) not in self.explored_tiles):
+                        unexplored_tiles.append((x, y))
+        else:
+            for y in range(self.dungeon.height):
+                for x in range(self.dungeon.width):
+                    cell = self.dungeon.get_cell(x, y)
+                    if (cell in [CellType.FLOOR, CellType.DOOR] and 
+                        (x, y) not in self.explored_tiles):
+                        unexplored_tiles.append((x, y))
+        
+        if not unexplored_tiles:
+            self.auto_explore_target = None
+            return
+        
+        # Find the closest unexplored tile
+        closest_distance = float('inf')
+        closest_tile = None
+        
+        for tile_x, tile_y in unexplored_tiles:
+            distance = abs(tile_x - player_x) + abs(tile_y - player_y)  # Manhattan distance
+            if distance < closest_distance:
+                closest_distance = distance
+                closest_tile = (tile_x, tile_y)
+        
+        self.auto_explore_target = closest_tile
+        self._calculate_auto_explore_path()
+    
+    def _calculate_auto_explore_path(self):
+        """Calculate path to the auto-explore target using unified pathfinding."""
+        if not self.auto_explore_target or not self.player:
+            self.auto_explore_path = []
+            return
+        
+        start = (self.player.x, self.player.y)
+        target = self.auto_explore_target
+        
+        # Use unified pathfinding that can reach unexplored areas
+        is_town = (self.current_area == GameArea.TOWN)
+        self.auto_explore_path = self._find_path_unified(start, target, is_town=is_town, allow_unexplored=True)
+        
+        if not self.auto_explore_path:
+            self.add_to_log("Auto-explore stopped: cannot reach target", (255, 255, 100))
+            self.auto_explore_active = False
+    
+    def _find_path(self, start, target):
+        """Find path in dungeon using unified pathfinding."""
+        return self._find_path_unified(start, target, is_town=False, allow_unexplored=False)
+    
+    
+    def _update_auto_explore(self):
+        """Update auto-explore movement."""
+        if not self.auto_explore_active or not self.player:
+            return
+        
+        current_time = pygame.time.get_ticks() / 1000.0
+        
+        # Check if enemies are visible
+        if self._are_enemies_visible():
+            self.add_to_log("Auto-explore stopped: enemy detected!", (255, 100, 100))
+            self.auto_explore_active = False
+            self.auto_explore_path = []
+            self.auto_explore_target = None
+            return
+        
+        # Check if we have a path
+        if not self.auto_explore_path:
+            self._find_next_exploration_target()
+            if not self.auto_explore_target:
+                self.add_to_log("Auto-explore complete: all areas explored!", (100, 255, 100))
+                self.auto_explore_active = False
+            return
+        
+        # Move to next position in path
+        if self.player.can_move(current_time):
+            next_pos = self.auto_explore_path[0]
+            dx = next_pos[0] - self.player.x
+            dy = next_pos[1] - self.player.y
+            
+            # Move player
+            self.player.move_to(next_pos[0], next_pos[1], current_time)
+            self.update_camera()
+            
+            # Remove the position we just moved to
+            self.auto_explore_path.pop(0)
+            
+            # Check for special interactions
+            self._check_special_tiles(next_pos[0], next_pos[1])
+            
+            # Update fog of war
+            self._update_fog_of_war()
+    
+    def _update_click_navigation(self):
+        """Update click navigation movement."""
+        if not self.click_navigation_active or not self.click_path or not self.player:
+            return
+        
+        # Check if player can move
+        current_time = pygame.time.get_ticks() / 1000.0
+        if not self.player.can_move(current_time):
+            return
+        
+        # Get next position in path
+        next_pos = self.click_path[0]
+        
+        # Check if there's an enemy at the destination
+        enemy_at_destination = self._get_enemy_at_position(next_pos[0], next_pos[1])
+        if enemy_at_destination:
+            # Attack the enemy instead of moving
+            self._attack_enemy(enemy_at_destination)
+            self.click_navigation_active = False
+            self.click_path = []
+            self.click_target = None
+            return
+        
+        # Move to next position
+        dx = next_pos[0] - self.player.x
+        dy = next_pos[1] - self.player.y
+        
+        # Check if movement is valid
+        can_move = False
+        if self.current_area == GameArea.TOWN:
+            can_move = self.town.can_move_to(next_pos[0], next_pos[1])
+        elif self.current_area == GameArea.DUNGEON:
+            can_move = self.dungeon.can_move_to(next_pos[0], next_pos[1])
+        
+        if can_move:
+            self.player.move_to(next_pos[0], next_pos[1], current_time)
+            self.update_camera()
+            
+            # Remove the completed step from path
+            self.click_path.pop(0)
+            
+            # Check if we've reached the target
+            if not self.click_path:
+                self.click_navigation_active = False
+                self.click_target = None
+                self.add_to_log("Reached destination!", (100, 255, 100))
+            else:
+                # Check for special interactions
+                self._check_special_tiles(next_pos[0], next_pos[1])
+        else:
+            # Path is blocked, cancel navigation
+            self.click_navigation_active = False
+            self.click_path = []
+            self.click_target = None
+            self.add_to_log("Path blocked!", (255, 100, 100))
+    
+    def _render_click_path(self):
+        """Render the click navigation path."""
+        if not self.click_navigation_active or not self.click_path:
+            return
+        
+        # Render path as a series of connected dots
+        for i, (x, y) in enumerate(self.click_path):
+            screen_x = (x - self.camera_x) * self.tile_size
+            screen_y = (y - self.camera_y) * self.tile_height
+            
+            # Check if the tile is on screen
+            if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+                screen_y >= -self.tile_height and screen_y < self.screen.get_height() + self.tile_height):
+                
+                # Calculate center of tile
+                center_x = screen_x + self.tile_size // 2
+                center_y = screen_y + self.tile_height // 2
+                
+                # Draw path indicator
+                if i == 0:
+                    # Start of path - green circle
+                    pygame.draw.circle(self.screen, (0, 255, 0), (center_x, center_y), 4)
+                elif i == len(self.click_path) - 1:
+                    # End of path - red circle
+                    pygame.draw.circle(self.screen, (255, 0, 0), (center_x, center_y), 4)
+                else:
+                    # Middle of path - blue circle
+                    pygame.draw.circle(self.screen, (0, 100, 255), (center_x, center_y), 3)
+                
+                # Draw line to next point
+                if i < len(self.click_path) - 1:
+                    next_x, next_y = self.click_path[i + 1]
+                    next_screen_x = (next_x - self.camera_x) * self.tile_size
+                    next_screen_y = (next_y - self.camera_y) * self.tile_height
+                    next_center_x = next_screen_x + self.tile_size // 2
+                    next_center_y = next_screen_y + self.tile_height // 2
+                    
+                    # Only draw line if both points are on screen
+                    if (next_screen_x >= -self.tile_size and next_screen_x < self.screen.get_width() + self.tile_size and
+                        next_screen_y >= -self.tile_height and next_screen_y < self.screen.get_height() + self.tile_height):
+                        pygame.draw.line(self.screen, (0, 150, 255), (center_x, center_y), (next_center_x, next_center_y), 2)
+
+def main():
+    """Main entry point."""
+    game = Game()
+    game.run()
 
 if __name__ == "__main__":
-    game = Game()
-    game.run() 
+    main()
