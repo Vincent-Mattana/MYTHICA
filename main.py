@@ -40,22 +40,34 @@ class CellType(Enum):
     TOWN_DOOR = 8
     TOWN_BUILDING = 9
     DUNGEON_ENTRANCE = 10
+    # New town elements
+    STORAGE_CHEST = 11
+    WELL = 12
+    WILDERNESS_EXIT = 13
+    # Wilderness elements
+    WILDERNESS_FLOOR = 14
+    WILDERNESS_TREE = 15
+    WILDERNESS_GRASS = 16
+    # NPC avatar
+    NPC_AVATAR = 17
 
 class GameArea(Enum):
     """Different areas of the game world."""
     TOWN = "town"
     DUNGEON = "dungeon"
+    WILDERNESS = "wilderness"
 
 class NPC:
     """Represents a non-player character in the town."""
     
-    def __init__(self, name: str, x: int, y: int, npc_type: str, dialogue: List[str]):
+    def __init__(self, name: str, x: int, y: int, npc_type: str, dialogue: List[str], services: Optional[List[str]] = None):
         self.name = name
         self.x = x
         self.y = y
-        self.npc_type = npc_type  # "shopkeeper", "innkeeper", "blacksmith", "priest"
+        self.npc_type = npc_type  # "healer", "blacksmith", "wizard", "shopkeeper", etc.
         self.dialogue = dialogue
         self.current_dialogue = 0
+        self.services = services or []  # "heal", "buy_potions", "repair", "identify", etc.
     
     def get_dialogue(self) -> str:
         """Get current dialogue line."""
@@ -64,6 +76,10 @@ class NPC:
             self.current_dialogue = (self.current_dialogue + 1) % len(self.dialogue)
             return dialogue
         return f"Hello, I'm {self.name}."
+    
+    def has_service(self, service: str) -> bool:
+        """Check if NPC offers a specific service."""
+        return service in self.services
 
 class Town:
     """Represents the starting town area."""
@@ -79,33 +95,59 @@ class Town:
         self._place_npcs()
     
     def _generate_town(self):
-        """Generate the town layout with buildings and paths."""
-        # Create main paths
-        for x in range(1, self.width - 1):
-            self.grid[1][x] = CellType.TOWN_FLOOR  # Top path
-            self.grid[self.height - 2][x] = CellType.TOWN_FLOOR  # Bottom path
-        
-        for y in range(1, self.height - 1):
-            self.grid[y][1] = CellType.TOWN_FLOOR  # Left path
-            self.grid[y][self.width - 2] = CellType.TOWN_FLOOR  # Right path
-        
-        # Create central plaza
+        """Generate a spacious, open town layout with proper building sizes."""
         center_x, center_y = self.width // 2, self.height // 2
-        for dy in range(-2, 3):
-            for dx in range(-2, 3):
+        
+        # Create main roads (wider and more prominent)
+        # North-South main road (5 tiles wide)
+        for y in range(1, self.height - 1):
+            for road_offset in range(-2, 3):  # 5-tile wide road
+                if 0 <= center_x + road_offset < self.width:
+                    self.grid[y][center_x + road_offset] = CellType.TOWN_FLOOR
+        
+        # East-West main road (5 tiles wide)  
+        for x in range(1, self.width - 1):
+            for road_offset in range(-2, 3):  # 5-tile wide road
+                if 0 <= center_y + road_offset < self.height:
+                    self.grid[center_y + road_offset][x] = CellType.TOWN_FLOOR
+        
+        # Create massive town square (9x9)
+        for dy in range(-4, 5):
+            for dx in range(-4, 5):
                 x, y = center_x + dx, center_y + dy
                 if 0 <= x < self.width and 0 <= y < self.height:
                     self.grid[y][x] = CellType.TOWN_FLOOR
         
-        # Create buildings around the plaza
+        # Place well in center of square
+        self.grid[center_y][center_x] = CellType.WELL
+        
+        # Create buildings with much better spacing and 3x3+ interior rooms
         buildings = [
-            (center_x - 4, center_y - 2, 3, 3),  # Shop
-            (center_x + 2, center_y - 2, 3, 3),  # Inn
-            (center_x - 4, center_y + 2, 3, 3),  # Blacksmith
-            (center_x + 2, center_y + 2, 3, 3),  # Temple
+            # Healer's clinic (top-left) - 5x5 building (3x3 interior)
+            (center_x - 18, center_y - 12, 5, 5, "healer"),
+            # Blacksmith (top-right) - 6x5 building (4x3 interior) 
+            (center_x + 14, center_y - 12, 6, 5, "blacksmith"),
+            # Wizard's tower (bottom-left) - 5x6 building (3x4 interior)
+            (center_x - 18, center_y + 8, 5, 6, "wizard"),
+            # Storage warehouse (bottom-right) - 6x5 building (4x3 interior)
+            (center_x + 14, center_y + 8, 6, 5, "storage"),
+            # General goods shop (far left) - 5x5 building (3x3 interior)
+            (center_x - 28, center_y - 2, 5, 5, "shop"),
+            # Inn (far right) - 7x5 building (5x3 interior)
+            (center_x + 22, center_y - 2, 7, 5, "inn"),
+            # Temple (top center) - 5x5 building (3x3 interior)
+            (center_x - 2, center_y - 18, 5, 5, "temple"),
+            # Market stall (bottom center) - 4x4 building (2x2 interior)
+            (center_x - 1, center_y + 15, 4, 4, "market"),
         ]
         
-        for bx, by, bw, bh in buildings:
+        self.building_info = {}  # Store building metadata
+        
+        for bx, by, bw, bh, building_type in buildings:
+            if not (0 <= bx < self.width - bw and 0 <= by < self.height - bh):
+                continue  # Skip if building doesn't fit
+                
+            # Build walls and interior
             for dy in range(bh):
                 for dx in range(bw):
                     x, y = bx + dx, by + dy
@@ -115,62 +157,200 @@ class Town:
                         else:
                             self.grid[y][x] = CellType.TOWN_BUILDING
         
-        # Add doors to buildings
-        for bx, by, bw, bh in buildings:
-            # Front door
+            # Add door (front entrance towards center)
             door_x = bx + bw // 2
-            door_y = by - 1
+            if bx < center_x:  # Building is left of center
+                door_y = by + bh  # Door at bottom
+            elif bx > center_x:  # Building is right of center
+                door_y = by + bh  # Door at bottom
+            elif by < center_y:  # Building is above center
+                door_y = by + bh  # Door at bottom
+            else:  # Building is below center
+                door_y = by - 1  # Door at top
+            
             if 0 <= door_x < self.width and 0 <= door_y < self.height:
                 self.grid[door_y][door_x] = CellType.TOWN_DOOR
         
-        # Place dungeon entrance
-        dx, dy = self.dungeon_entrance
-        self.grid[dy][dx] = CellType.DUNGEON_ENTRANCE
-        self.grid[dy - 1][dx] = CellType.TOWN_FLOOR  # Path to entrance
+                # Create path from door towards center
+                if building_type in ["healer", "blacksmith", "wizard", "storage"]:
+                    # Create paths from main buildings to center
+                    path_steps = 3
+                    dx_step = 1 if door_x < center_x else -1 if door_x > center_x else 0
+                    dy_step = 1 if door_y < center_y else -1 if door_y > center_y else 0
+                    
+                    for step in range(1, path_steps + 1):
+                        path_x = door_x + (dx_step * step)
+                        path_y = door_y + (dy_step * step)
+                        if 0 <= path_x < self.width and 0 <= path_y < self.height:
+                            self.grid[path_y][path_x] = CellType.TOWN_FLOOR
+            
+            # Store building info for NPC placement (center of interior)
+            interior_x = bx + bw // 2
+            interior_y = by + bh // 2
+            self.building_info[building_type] = {
+                'x': interior_x, 'y': interior_y,
+                'door_x': door_x, 'door_y': door_y,
+                'building_x': bx, 'building_y': by,
+                'building_w': bw, 'building_h': bh
+            }
+        
+        # Add storage chest in storage building
+        if 'storage' in self.building_info:
+            storage = self.building_info['storage']
+            # Place chest in corner of storage room
+            chest_x = storage['building_x'] + 1
+            chest_y = storage['building_y'] + 1
+            self.grid[chest_y][chest_x] = CellType.STORAGE_CHEST
+        
+        # Create wilderness exit (top of town, more prominent)
+        wilderness_exit_x = center_x
+        self.grid[2][wilderness_exit_x] = CellType.WILDERNESS_EXIT
+        self.grid[3][wilderness_exit_x] = CellType.TOWN_FLOOR  # Path to exit
+        
+        # Add some decorative elements around town
+        # Small gardens near buildings
+        garden_spots = [
+            (center_x - 10, center_y - 8),
+            (center_x + 10, center_y - 8),
+            (center_x - 10, center_y + 6),
+            (center_x + 10, center_y + 6),
+        ]
+        
+        for gx, gy in garden_spots:
+            if 0 <= gx < self.width and 0 <= gy < self.height:
+                if self.grid[gy][gx] == CellType.TOWN_WALL:  # Don't overwrite roads
+                    self.grid[gy][gx] = CellType.WELL  # Use as decorative element
     
     def _place_npcs(self):
-        """Place NPCs in the town."""
-        center_x, center_y = self.width // 2, self.height // 2
+        """Place NPCs outside their buildings as visible avatars."""
+        # Healer - Dr. Mira the Healer (in front of clinic)
+        if 'healer' in self.building_info:
+            healer_pos = self.building_info['healer']
+            # Place NPC in front of door
+            npc_x = healer_pos['door_x']
+            npc_y = healer_pos['door_y'] + 1
+            self.npcs.append(NPC(
+                "Dr. Mira the Healer", npc_x, npc_y, "healer",
+                [
+                    "Welcome to my clinic! Let me tend to your wounds.",
+                    "I have healing potions and scrolls for sale.",
+                    "The wilderness can be dangerous - be prepared!",
+                    "My herbs come from the enchanted forest beyond town."
+                ],
+                services=["heal", "buy_potions", "buy_scrolls"]
+            ))
+            # Mark their position as an NPC avatar
+            if 0 <= npc_x < self.width and 0 <= npc_y < self.height:
+                self.painted_sprites[(npc_x, npc_y)] = "healer_avatar"
         
-        # Shopkeeper in the shop
-        self.npcs.append(NPC(
-            "Marcus the Merchant", center_x - 2, center_y - 1, "shopkeeper",
-            [
-                "Welcome to my shop! I have the finest goods in town.",
-                "Adventuring gear? You've come to the right place!",
-                "Be careful in that dungeon - it's dangerous down there."
-            ]
-        ))
+        # Blacksmith - Gareth the Blacksmith (in front of forge)
+        if 'blacksmith' in self.building_info:
+            blacksmith_pos = self.building_info['blacksmith']
+            npc_x = blacksmith_pos['door_x']
+            npc_y = blacksmith_pos['door_y'] + 1
+            self.npcs.append(NPC(
+                "Gareth the Blacksmith", npc_x, npc_y, "blacksmith",
+                [
+                    "Welcome to my forge! The finest weapons and armour!",
+                    "Your gear looks worn - I can repair that for you.",
+                    "I've been smithing for thirty years - trust my work!",
+                    "That dungeon will test your equipment's mettle."
+                ],
+                services=["repair", "buy_weapons", "buy_armor"]
+            ))
+            if 0 <= npc_x < self.width and 0 <= npc_y < self.height:
+                self.painted_sprites[(npc_x, npc_y)] = "blacksmith_avatar"
         
-        # Innkeeper in the inn
-        self.npcs.append(NPC(
-            "Elena the Innkeeper", center_x + 2, center_y - 1, "innkeeper",
-            [
-                "Welcome to the Golden Dragon Inn!",
-                "Need a place to rest? We have the best beds in town.",
-                "The dungeon entrance is just south of here."
-            ]
-        ))
+        # Wizard - Elias the Wise (in front of tower)
+        if 'wizard' in self.building_info:
+            wizard_pos = self.building_info['wizard']
+            npc_x = wizard_pos['door_x']
+            npc_y = wizard_pos['door_y'] + 1
+            self.npcs.append(NPC(
+                "Elias the Wise", npc_x, npc_y, "wizard",
+                [
+                    "Ah, another seeker of knowledge enters my tower!",
+                    "I can identify mysterious items you've found.",
+                    "The magic in that dungeon is ancient and powerful...",
+                    "Did you know that goblins were once civilized beings?",
+                    "The art of magic requires patience and understanding."
+                ],
+                services=["identify", "buy_scrolls"]
+            ))
+            if 0 <= npc_x < self.width and 0 <= npc_y < self.height:
+                self.painted_sprites[(npc_x, npc_y)] = "wizard_avatar"
         
-        # Blacksmith
-        self.npcs.append(NPC(
-            "Thorin the Blacksmith", center_x - 2, center_y + 1, "blacksmith",
-            [
-                "I forge the finest weapons and armour!",
-                "That old dungeon has been there for centuries.",
-                "Need your gear repaired? I'm your man!"
-            ]
-        ))
+        # Innkeeper - Elena (in front of inn)
+        if 'inn' in self.building_info:
+            inn_pos = self.building_info['inn']
+            npc_x = inn_pos['door_x']
+            npc_y = inn_pos['door_y'] + 1
+            self.npcs.append(NPC(
+                "Elena the Innkeeper", npc_x, npc_y, "innkeeper",
+                [
+                    "Welcome to the Golden Griffin Inn!",
+                    "Need a room for the night? Just say the word.",
+                    "The wilderness is getting more dangerous lately.",
+                    "I've heard strange tales from travelers."
+                ],
+                services=["rest", "rumors"]
+            ))
+            if 0 <= npc_x < self.width and 0 <= npc_y < self.height:
+                self.painted_sprites[(npc_x, npc_y)] = "innkeeper_avatar"
         
-        # Priest
-        self.npcs.append(NPC(
-            "Father Benedict", center_x + 2, center_y + 1, "priest",
+        # Shopkeeper - Marcus (in front of shop)
+        if 'shop' in self.building_info:
+            shop_pos = self.building_info['shop']
+            npc_x = shop_pos['door_x']
+            npc_y = shop_pos['door_y'] + 1
+            self.npcs.append(NPC(
+                "Marcus the Merchant", npc_x, npc_y, "shopkeeper",
+                [
+                    "Welcome to my general store!",
+                    "I stock all manner of useful items.",
+                    "Rope, torches, rations - whatever you need!",
+                    "Business has been good with all these adventurers."
+                ],
+                services=["buy_supplies", "sell_items"]
+            ))
+            if 0 <= npc_x < self.width and 0 <= npc_y < self.height:
+                self.painted_sprites[(npc_x, npc_y)] = "merchant_avatar"
+        
+        # Temple priest - Father Benedict (in front of temple)
+        if 'temple' in self.building_info:
+            temple_pos = self.building_info['temple']
+            npc_x = temple_pos['door_x']
+            npc_y = temple_pos['door_y'] + 1
+            self.npcs.append(NPC(
+                "Father Benedict", npc_x, npc_y, "priest",
             [
                 "May the light guide your path, adventurer.",
-                "The dungeon below holds ancient secrets and dangers.",
-                "I can bless your equipment if you need divine protection."
-            ]
-        ))
+                    "This temple has stood for centuries.",
+                    "I can offer blessings and spiritual guidance.",
+                    "The ancient evil stirs in the depths below."
+                ],
+                services=["bless", "heal", "guidance"]
+            ))
+            if 0 <= npc_x < self.width and 0 <= npc_y < self.height:
+                self.painted_sprites[(npc_x, npc_y)] = "priest_avatar"
+        
+        # Market trader - Senna the Trader (in front of market)
+        if 'market' in self.building_info:
+            market_pos = self.building_info['market']
+            npc_x = market_pos['door_x']
+            npc_y = market_pos['door_y'] + 1
+            self.npcs.append(NPC(
+                "Senna the Trader", npc_x, npc_y, "trader",
+                [
+                    "Looking for rare goods? You've found the right place!",
+                    "I deal in exotic items from distant lands.",
+                    "Perhaps we can make a deal?",
+                    "I've heard rumors of treasure in the wilderness."
+                ],
+                services=["trade_rare", "buy_gems", "sell_exotic"]
+            ))
+            if 0 <= npc_x < self.width and 0 <= npc_y < self.height:
+                self.painted_sprites[(npc_x, npc_y)] = "trader_avatar"
     
     def get_npc_at(self, x: int, y: int) -> Optional[NPC]:
         """Get NPC at specific position."""
@@ -188,7 +368,96 @@ class Town:
     def can_move_to(self, x: int, y: int) -> bool:
         """Check if player can move to position."""
         cell = self.get_cell(x, y)
-        return cell in [CellType.TOWN_FLOOR, CellType.TOWN_DOOR, CellType.DUNGEON_ENTRANCE]
+        return cell in [CellType.TOWN_FLOOR, CellType.TOWN_DOOR, CellType.DUNGEON_ENTRANCE, CellType.WILDERNESS_EXIT, CellType.STORAGE_CHEST, CellType.WELL]
+
+class Wilderness:
+    """Represents the wilderness area (level 0) with animals and dungeon entrance."""
+    
+    def __init__(self, width: int, height: int):
+        self.width = width
+        self.height = height
+        self.grid = [[CellType.WILDERNESS_GRASS for _ in range(width)] for _ in range(height)]
+        self.town_entrance = (width // 2, 1)  # Top center - entrance back to town
+        self.dungeon_entrance = (width // 2, height - 2)  # Bottom center - entrance to dungeon
+        self.animals = []  # Will store animal positions and types
+        self.npcs = []  # No NPCs in wilderness for now
+        self.painted_sprites = {}
+        self._generate_wilderness()
+        self._place_animals()
+    
+    def _generate_wilderness(self):
+        """Generate the wilderness layout with trees, grass, and paths."""
+        # Create a rough path from town to dungeon
+        center_x = self.width // 2
+        for y in range(1, self.height - 1):
+            # Make a winding path
+            path_width = 2
+            for offset in range(-path_width//2, path_width//2 + 1):
+                x = center_x + offset + random.randint(-1, 1)
+                if 0 <= x < self.width:
+                    self.grid[y][x] = CellType.WILDERNESS_FLOOR
+        
+        # Add some clearings
+        clearings = [
+            (self.width // 4, self.height // 3, 3),
+            (3 * self.width // 4, 2 * self.height // 3, 2),
+            (self.width // 6, 3 * self.height // 4, 2),
+        ]
+        
+        for cx, cy, radius in clearings:
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    x, y = cx + dx, cy + dy
+                    if (0 <= x < self.width and 0 <= y < self.height and 
+                        dx*dx + dy*dy <= radius*radius):
+                        self.grid[y][x] = CellType.WILDERNESS_FLOOR
+        
+        # Scatter trees randomly (but not on paths)
+        tree_count = (self.width * self.height) // 8
+        for _ in range(tree_count):
+            x = random.randint(1, self.width - 2)
+            y = random.randint(2, self.height - 3)
+            if self.grid[y][x] == CellType.WILDERNESS_GRASS:
+                self.grid[y][x] = CellType.WILDERNESS_TREE
+        
+        # Place entrances
+        self.grid[self.town_entrance[1]][self.town_entrance[0]] = CellType.WILDERNESS_EXIT
+        self.grid[self.dungeon_entrance[1]][self.dungeon_entrance[0]] = CellType.DUNGEON_ENTRANCE
+    
+    def _place_animals(self):
+        """Place small animals throughout the wilderness."""
+        # This will be expanded later with actual animal entities
+        # For now, just mark some positions for cosmetic animals
+        animal_types = [
+            ("bird", "bird"),
+            ("frog", "frog"),
+            ("snake", "snake"),  # Use snake as rabbit substitute
+            ("slime", "chicken")  # Use slime as chicken substitute
+        ]
+        animal_count = 12
+        
+        for _ in range(animal_count):
+            x = random.randint(1, self.width - 2)
+            y = random.randint(2, self.height - 3)
+            if self.grid[y][x] in [CellType.WILDERNESS_FLOOR, CellType.WILDERNESS_GRASS]:
+                animal_name, sprite_name = random.choice(animal_types)
+                self.animals.append({
+                    'type': animal_name,
+                    'x': x,
+                    'y': y,
+                    'sprite': sprite_name  # Will map to sprite names
+                })
+    
+    def get_cell(self, x: int, y: int) -> CellType:
+        """Get cell type at position."""
+        if 0 <= x < self.width and 0 <= y < self.height:
+            return self.grid[y][x]
+        return CellType.WILDERNESS_TREE
+    
+    def can_move_to(self, x: int, y: int) -> bool:
+        """Check if player can move to position."""
+        cell = self.get_cell(x, y)
+        return cell in [CellType.WILDERNESS_FLOOR, CellType.WILDERNESS_GRASS, CellType.WILDERNESS_EXIT, CellType.DUNGEON_ENTRANCE]
 
 class Room:
     """Represents a room in the dungeon."""
@@ -400,12 +669,14 @@ class Player:
         self.last_move_time = 0
         self.move_cooldown = 0.1  # 100ms between moves
     
-    def can_move(self, current_time: float) -> bool:
+    def can_move(self, current_time: float, speed_multiplier: float = 1.0) -> bool:
         """Check if player can move now."""
-        return current_time - self.last_move_time >= self.move_cooldown
+        effective_cooldown = self.move_cooldown / speed_multiplier
+        return current_time - self.last_move_time >= effective_cooldown
     
     def move_to(self, x: int, y: int, current_time: float):
         """Move player to new position."""
+        print(f"MOVEMENT LOG: Player moving from ({self.x}, {self.y}) to ({x}, {y})")
         self.x = x
         self.y = y
         self.last_move_time = current_time
@@ -437,6 +708,9 @@ class Game:
         self.max_dungeon_level = 5
         self.custom_town_data = None  # Initialize custom town data
         
+        # Initialize areas
+        self.wilderness = None
+        
         # Auto-explore state
         self.auto_explore_active = False
         self.auto_explore_path = []
@@ -462,9 +736,26 @@ class Game:
         self.click_navigation_active = False
         self.mouse_held = False  # Track if mouse is being held down
         self.last_mouse_pos = None  # Track last mouse position
-        self.last_mouse_click_time = 0.0  # Throttle continuous clicks
+        self.last_mouse_click_time = 0.0
+        
+        # NPC interaction popup
+        self.npc_popup_active = False
+        self.active_npc = None
+        self.npc_popup_selection = 0  # Throttle continuous clicks
         self.last_click_pos = None  # Track last click position for double-click detection
         self.double_click_time = 0.5  # Maximum time between clicks for double-click
+        
+        # Key repeat system
+        self.held_keys = set()  # Track which keys are currently held
+        self.key_repeat_delay = 0.5  # Initial delay before repeat starts (seconds)
+        self.key_repeat_rate = 0.1   # Repeat rate once started (seconds between repeats)
+        self.key_first_press_times = {}  # Track when each key was first pressed
+        self.key_last_repeat_times = {}  # Track when each key was last repeated
+        
+        # Click-hold speed control options
+        self.click_hold_update_rate = 0.2  # How often to update navigation (seconds) - was 0.1
+        self.click_hold_movement_speed = 1.0  # Speed multiplier for click movement (1.0 = normal)
+        self.click_hold_precise_mode = False  # If true, requires discrete clicks instead of continuous
         
         # Player sprite direction
         self.player_direction = 'left'  # Track which way player is facing
@@ -497,6 +788,7 @@ class Game:
         
         # Initialize game areas
         self.town = self._create_town()
+        self.wilderness = Wilderness(35, 25)  # Smaller wilderness area
         self.dungeon = Dungeon(50, 40, self.dungeon_level)
         
         # Initialize player
@@ -833,7 +1125,10 @@ class Game:
             if self.current_area == GameArea.TOWN:
                 if self.town.get_cell(x, y) in [CellType.TOWN_WALL, CellType.TOWN_BUILDING]:
                     return False
-            else:
+            elif self.current_area == GameArea.WILDERNESS:
+                if self.wilderness.get_cell(x, y) == CellType.WILDERNESS_TREE:
+                    return False
+            else:  # DUNGEON
                 if self.dungeon.get_cell(x, y) == CellType.WALL:
                     return False
                     
@@ -904,8 +1199,8 @@ class Game:
             print("Using existing custom town data")
             return self._create_town_from_data()
         else:
-            print("Using generated town layout")
-            return Town(40, 30)
+            print("Using NEW REDESIGNED town layout with NPCs and wilderness!")
+            return Town(60, 45)  # Much bigger town
     
     def _load_custom_town(self):
         """Load custom town data from file."""
@@ -1049,6 +1344,13 @@ class Game:
         """Handle input events."""
         if event.type == pygame.KEYDOWN:
             if self.state_manager.current_state == GameState.PLAYING:
+                # Track key press for repeat functionality
+                current_time = pygame.time.get_ticks() / 1000.0
+                if event.key not in self.held_keys:
+                    self.held_keys.add(event.key)
+                    self.key_first_press_times[event.key] = current_time
+                    self.key_last_repeat_times[event.key] = current_time
+                
                 self._handle_game_input(event.key)
             else:
                 # Handle menu input
@@ -1057,9 +1359,19 @@ class Game:
                     self.running = False
                 elif character:
                     self.start_game(character)
+        elif event.type == pygame.KEYUP:
+            if self.state_manager.current_state == GameState.PLAYING:
+                # Stop tracking key for repeat functionality
+                if event.key in self.held_keys:
+                    self.held_keys.remove(event.key)
+                    if event.key in self.key_first_press_times:
+                        del self.key_first_press_times[event.key]
+                    if event.key in self.key_last_repeat_times:
+                        del self.key_last_repeat_times[event.key]
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # Left click
                 if self.state_manager.current_state == GameState.PLAYING:
+                    print("DEBUG: Mouse button pressed - starting hold navigation")
                     self.mouse_held = True
                     self.last_mouse_pos = event.pos
                     self._handle_mouse_click(event.pos)
@@ -1072,19 +1384,33 @@ class Game:
         elif event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:  # Left click release
                 if self.state_manager.current_state == GameState.PLAYING:
+                    print("DEBUG: Mouse button released - stopping hold navigation")
                     self.mouse_held = False
                     self.last_mouse_pos = None
+                    if hasattr(self, 'last_mouse_tile'):
+                        delattr(self, 'last_mouse_tile')
         elif event.type == pygame.MOUSEMOTION:
             if self.state_manager.current_state == GameState.PLAYING and self.mouse_held:
-                # Continuous navigation while mouse is held
-                current_time = pygame.time.get_ticks() / 1000.0
-                current_pos = event.pos
+                # Always update mouse position for continuous navigation
+                self.last_mouse_pos = event.pos
                 
-                # More responsive - trigger on movement OR if enough time has passed
-                if (current_time - self.last_mouse_click_time >= 0.05):  # 20 times per second max
-                    self._handle_mouse_click(current_pos)
+                # Immediately update target when mouse moves to new tile
+                current_time = pygame.time.get_ticks() / 1000.0
+                tile_x, tile_y = self._screen_to_tile_coords(event.pos[0], event.pos[1])
+                
+                # Check if we're targeting a new tile - more responsive
+                if (not hasattr(self, 'last_mouse_tile') or 
+                    self.last_mouse_tile != (tile_x, tile_y)):
+                    self.last_mouse_tile = (tile_x, tile_y)
+                    print(f"DEBUG: Mouse moved to new tile ({tile_x}, {tile_y}) - updating navigation")
+                    # ALWAYS restart navigation immediately when mouse moves to new tile while held
+                    self._handle_mouse_click(event.pos)
                     self.last_mouse_click_time = current_time
-                self.last_mouse_pos = current_pos
+                elif not self.click_path and self.click_navigation_active:
+                    # Force restart if we have no path but navigation is still active
+                    print(f"DEBUG: No path but navigation active - forcing restart to ({tile_x}, {tile_y})")
+                    self._handle_mouse_click(event.pos)
+                    self.last_mouse_click_time = current_time
         elif event.type == pygame.VIDEORESIZE:
             self._handle_window_resize(event)
         elif event.type == pygame.QUIT:
@@ -1095,8 +1421,11 @@ class Game:
         if not self.player:
             return
         
-        # Handle popup input first
-        if self.skill_popup_open:
+        # Handle popup input first (priority order matters)
+        if self.npc_popup_active:
+            self._handle_npc_popup_input(key)
+            return
+        elif self.skill_popup_open:
             self._handle_skill_popup_input(key)
             return
         elif self.log_popup_open:
@@ -1192,6 +1521,14 @@ class Game:
             self._reset_zoom()
         elif key == pygame.K_HOME:  # HOME key to reset to no zoom (1.0x)
             self._reset_to_no_zoom()
+        elif key == pygame.K_F1:  # Toggle click-hold precise mode
+            self._toggle_click_hold_precise_mode()
+        elif key == pygame.K_F2:  # Decrease click-hold speed
+            self._adjust_click_hold_speed(-0.2)
+        elif key == pygame.K_F3:  # Increase click-hold speed
+            self._adjust_click_hold_speed(0.2)
+        elif key == pygame.K_F4:  # Reset click-hold speed to normal
+            self._reset_click_hold_speed()
     
     def _try_move_player_multiple(self, dx: int, dy: int, current_time: float, steps: int):
         """Try to move the player multiple steps with modifiers."""
@@ -1219,12 +1556,16 @@ class Game:
             self.auto_explore_target = None
             self.add_to_log("Auto-explore cancelled", (255, 255, 255))
         
-        # Cancel click navigation on manual movement
+        # Cancel click navigation on manual movement ONLY if mouse is not held
         if self.click_navigation_active:
+            if not self.mouse_held:
+                print("NAVIGATION LOG: Manual movement cancelling click navigation - mouse not held")
             self.click_navigation_active = False
             self.click_path = []
             self.click_target = None
             self.add_to_log("Click navigation cancelled", (255, 255, 255))
+        else:
+            print("NAVIGATION LOG: Manual movement but mouse held - NOT cancelling navigation")
         
         new_x = self.player.x + dx
         new_y = self.player.y + dy
@@ -1287,24 +1628,35 @@ class Game:
         
         if self.current_area == GameArea.TOWN:
             cell = self.town.get_cell(x, y)
-            if cell == CellType.DUNGEON_ENTRANCE:
-                self._enter_dungeon()
+            if cell == CellType.WILDERNESS_EXIT:
+                self._enter_wilderness()
             elif cell == CellType.TOWN_DOOR:
                 self.add_to_log("You enter the building.", (255, 255, 100))
+            elif cell == CellType.STORAGE_CHEST:
+                self.add_to_log("A storage chest - perfect for keeping items safe!", (255, 255, 100))
+                # TODO: Implement storage chest functionality
+            elif cell == CellType.WELL:
+                self.add_to_log("A deep well with crystal clear water.", (200, 200, 255))
             
             # Check for NPC interaction
             npc = self.town.get_npc_at(x, y)
             if npc:
-                self._talk_to_npc(npc)
-        else:
-            cell = self.dungeon.get_cell(x, y)
-            if cell == CellType.STAIRCASE:
-                self._go_down_stairs()
-            elif cell == CellType.CHEST:
-                self._open_chest()
+                self._open_npc_popup(npc)
+            elif self.current_area == GameArea.WILDERNESS:
+                cell = self.wilderness.get_cell(x, y)
+                if cell == CellType.WILDERNESS_EXIT:
+                    self._return_to_town()
+                elif cell == CellType.DUNGEON_ENTRANCE:
+                    self._enter_dungeon()
+            else:  # DUNGEON
+                cell = self.dungeon.get_cell(x, y)
+                if cell == CellType.STAIRCASE:
+                    self._go_down_stairs()
+                elif cell == CellType.CHEST:
+                    self._open_chest()
     
     def _enter_dungeon(self):
-        """Enter the dungeon from town."""
+        """Enter the dungeon from wilderness."""
         self.add_to_log("You descend into the dark dungeon...", (200, 200, 200))
         
         # Save town data before entering dungeon
@@ -1540,7 +1892,39 @@ class Game:
             print(f"DEBUG: Standing on stairs at ({stairs_x}, {stairs_y})")
             self.add_to_log(f"Standing on stairs at ({stairs_x}, {stairs_y})", (255, 255, 0))
         else:
-            self.add_to_log("You're already in town!", (255, 255, 100))
+            self.add_to_log("You're already in town!", (255, 255, 100)        )
+
+    def _enter_wilderness(self):
+        """Enter the wilderness from town."""
+        self.add_to_log("You leave the safety of town and enter the wilderness...", (150, 200, 150))
+        
+        self.current_area = GameArea.WILDERNESS
+        
+        # Place player at town entrance position
+        self.player.x, self.player.y = self.wilderness.town_entrance
+        self.update_camera()
+        
+        # Clear existing enemies (wilderness will have different creatures later)
+        self.enemy_manager.enemies = []
+        
+        self.add_to_log("The wilderness stretches before you. You can see the dungeon entrance to the south.", (200, 200, 100))
+
+    def _return_to_town(self):
+        """Return to town from wilderness."""
+        self.add_to_log("You return to the safety of town.", (100, 200, 100))
+        
+        self.current_area = GameArea.TOWN
+        
+        # Find wilderness exit in town and place player there
+        for y in range(self.town.height):
+            for x in range(self.town.width):
+                if self.town.get_cell(x, y) == CellType.WILDERNESS_EXIT:
+                    self.player.x, self.player.y = x, y
+                    break
+        
+        self.update_camera()
+        # Clear wilderness creatures
+        self.enemy_manager.enemies = []
     
     def _open_chest(self):
         """Open a chest and get loot."""
@@ -1601,6 +1985,40 @@ class Game:
             else:
                 self.add_to_log("Empty", (150, 150, 150))
     
+    def _handle_key_repeat(self):
+        """Handle key repeat functionality for held keys."""
+        if not self.held_keys:
+            return
+            
+        current_time = pygame.time.get_ticks() / 1000.0
+        
+        # Define which keys should support repeat
+        repeatable_keys = {
+            # Movement keys
+            pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT,
+            # Numpad keys
+            pygame.K_KP1, pygame.K_KP2, pygame.K_KP3, pygame.K_KP4, 
+            pygame.K_KP5, pygame.K_KP6, pygame.K_KP7, pygame.K_KP8, pygame.K_KP9,
+            # Zoom keys
+            pygame.K_KP_PLUS, pygame.K_KP_MINUS,
+        }
+        
+        for key in list(self.held_keys):  # Use list() to avoid modification during iteration
+            if key not in repeatable_keys:
+                continue
+                
+            first_press_time = self.key_first_press_times.get(key, current_time)
+            last_repeat_time = self.key_last_repeat_times.get(key, current_time)
+            
+            # Check if enough time has passed since first press to start repeating
+            time_since_first_press = current_time - first_press_time
+            time_since_last_repeat = current_time - last_repeat_time
+            
+            if time_since_first_press >= self.key_repeat_delay and time_since_last_repeat >= self.key_repeat_rate:
+                # Trigger repeat action
+                self.key_last_repeat_times[key] = current_time
+                self._handle_game_input(key)
+    
     def update(self, dt: float):
         """Update game state."""
         if self.state_manager.current_state != GameState.PLAYING:
@@ -1611,13 +2029,33 @@ class Game:
             print("DEBUG: Game is paused, skipping update")
             return
         
-        # Handle continuous mouse hold navigation
+        # Handle key repeat for held keys
+        self._handle_key_repeat()
+        
+        # Handle continuous mouse hold navigation - CRITICAL: Always continue while mouse held
         if (self.mouse_held and self.last_mouse_pos):
             current_time = pygame.time.get_ticks() / 1000.0
-            # Continuous navigation while holding mouse (5 times per second)
-            if current_time - self.last_mouse_click_time >= 0.2:
-                self._handle_mouse_click(self.last_mouse_pos)
-                self.last_mouse_click_time = current_time
+            print(f"HOLD LOG: Hold navigation check - Mouse held: {self.mouse_held}, Last pos: {self.last_mouse_pos is not None}, Time since last click: {current_time - self.last_mouse_click_time:.3f}")
+            
+            # Continuously update navigation while mouse is held (configurable rate for better control)
+            if current_time - self.last_mouse_click_time >= self.click_hold_update_rate:
+                tile_x, tile_y = self._screen_to_tile_coords(self.last_mouse_pos[0], self.last_mouse_pos[1])
+                
+                # ALWAYS update navigation target while mouse is held, regardless of current state
+                current_target = (tile_x, tile_y)
+                
+                # Force new navigation if target changed OR if we reached our destination
+                needs_new_path = (not self.click_navigation_active or 
+                                  not self.click_target or 
+                                  self.click_target != current_target or
+                                  not self.click_path)  # Also restart if path is empty
+                
+                if needs_new_path:
+                    print(f"HOLD LOG: RESTARTING navigation to ({tile_x}, {tile_y}) - Active: {self.click_navigation_active}, Target: {self.click_target}, Path: {len(self.click_path) if self.click_path else 0}, Mouse held: {self.mouse_held}")
+                    self._handle_mouse_click(self.last_mouse_pos)
+                    self.last_mouse_click_time = current_time
+                else:
+                    print(f"HOLD LOG: No new path needed - Active: {self.click_navigation_active}, Target: {self.click_target}, Current target: {current_target}, Path: {len(self.click_path) if self.click_path else 0}")
         
         # Update light flickering effect
         self._update_light_flicker(dt)
@@ -1662,7 +2100,9 @@ class Game:
         
         if self.current_area == GameArea.TOWN:
             self._render_town()
-        else:
+        elif self.current_area == GameArea.WILDERNESS:
+            self._render_wilderness()
+        else:  # DUNGEON
             self._render_dungeon()
         
         # Render blood splatters and corpses (on top of terrain, under characters)
@@ -1680,6 +2120,8 @@ class Game:
         if self.current_area == GameArea.TOWN:
             self._render_npcs()
             self._render_painted_sprites()
+        elif self.current_area == GameArea.WILDERNESS:
+            self._render_wilderness_animals()
         
         # Clear clipping before rendering UI elements
         self._clear_gameplay_clip()
@@ -1693,6 +2135,10 @@ class Game:
         # Render skill popup
         if self.skill_popup_open:
             self._render_skill_popup()
+        
+        # Render NPC popup
+        if self.npc_popup_active:
+            self._render_npc_popup()
         
         # Render log popup
         if self.log_popup_open:
@@ -1754,6 +2200,84 @@ class Game:
         
         # Render click navigation path
         self._render_click_path()
+    
+    def _render_wilderness(self):
+        """Render the wilderness using sprites."""
+        # Calculate available gameplay area (screen height - 60 pixels for bottom frame)
+        gameplay_height = self.screen.get_height() - 60
+        
+        for y in range(self.wilderness.height):
+            for x in range(self.wilderness.width):
+                # Only render if tile is visible or explored
+                if not (self._is_tile_visible(x, y) or self._is_tile_explored(x, y)):
+                    continue
+                    
+                screen_x = (x - self.camera_x) * self.tile_size
+                screen_y = (y - self.camera_y) * self.tile_height
+                
+                if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+                    screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
+                    
+                    cell = self.wilderness.get_cell(x, y)
+                    # Always show trees if explored, even if not currently visible
+                    if cell == CellType.WILDERNESS_TREE and self._is_tile_explored(x, y):
+                        self._render_cell_with_sprite(cell, screen_x, screen_y, x, y, dimmed=not self._is_tile_visible(x, y))
+                    elif self._is_tile_visible(x, y):
+                        self._render_cell_with_sprite(cell, screen_x, screen_y, x, y)
+                    elif self._is_tile_explored(x, y):
+                        # Show explored areas as dimmed
+                        self._render_cell_with_sprite(cell, screen_x, screen_y, x, y, dimmed=True)
+        
+        # Render click navigation path
+        self._render_click_path()
+
+    def _render_wilderness_animals(self):
+        """Render animals in the wilderness."""
+        if not self.wilderness or not self.wilderness.animals:
+            return
+            
+        gameplay_height = self.screen.get_height() - 60
+        
+        for animal in self.wilderness.animals:
+            # Only render if animal position is visible or explored
+            if not (self._is_tile_visible(animal['x'], animal['y']) or self._is_tile_explored(animal['x'], animal['y'])):
+                continue
+                
+            screen_x = (animal['x'] - self.camera_x) * self.tile_size
+            screen_y = (animal['y'] - self.camera_y) * self.tile_height
+            
+            if (screen_x >= -self.tile_size and screen_x < self.screen.get_width() + self.tile_size and
+                screen_y >= -self.tile_height and screen_y < gameplay_height + self.tile_height):
+                
+                # Determine tint based on visibility
+                if self._is_tile_visible(animal['x'], animal['y']):
+                    tint_color = None  # Full visibility
+                else:
+                    tint_color = self._get_fog_of_war_tint()  # Dimmed in fog
+                
+                # Try to draw animal sprite, fallback to colored circle
+                sprite_drawn = self.sprite_manager.sprite_system.draw_sprite(
+                    animal['sprite'], screen_x, screen_y,
+                    scale=self.zoom_level, tint_color=tint_color
+                )
+                
+                if not sprite_drawn:
+                    # Fallback: draw colored circle based on animal type
+                    animal_colors = {
+                        'bird': (100, 150, 255),
+                        'frog': (100, 200, 100),
+                        'snake': (100, 150, 100),
+                        'slime': (200, 255, 200)
+                    }
+                    color = animal_colors.get(animal['type'], (150, 150, 150))
+                    
+                    if tint_color:
+                        color = self._darken_color(color, 0.7)  # Apply fog tint
+                    
+                    center_x = screen_x + self.tile_size // 2
+                    center_y = screen_y + self.tile_height // 2
+                    radius = max(3, self.tile_size // 6)
+                    pygame.draw.circle(self.screen, color, (center_x, center_y), radius)
     
     def _render_dungeon(self):
         """Render the dungeon using sprites."""
@@ -1834,6 +2358,8 @@ class Game:
             sprite_name = self._get_random_wall_sprite()
         elif cell in [CellType.FLOOR, CellType.TOWN_FLOOR]:
             sprite_name = self._get_random_floor_sprite()
+        elif cell in [CellType.WILDERNESS_FLOOR, CellType.WILDERNESS_GRASS]:
+            sprite_name = self._get_random_wilderness_sprite()
         else:
             # Static sprites for other cell types
             base_sprites = {
@@ -1843,6 +2369,10 @@ class Game:
             CellType.HP_PICKUP: "bubbles 1",  # Use bubbles as health pickup
             CellType.TOWN_DOOR: "window",
             CellType.DUNGEON_ENTRANCE: "stairs down",
+                CellType.STORAGE_CHEST: "prison gate",
+                CellType.WELL: "big grass",  # Use grass as well placeholder
+                CellType.WILDERNESS_EXIT: "stairs up",
+                CellType.WILDERNESS_TREE: "tree dead",  # Use dead tree sprite
         }
             sprite_name = base_sprites.get(cell)
         
@@ -1861,6 +2391,11 @@ class Game:
         """Get a random floor sprite."""
         floor_sprites = ["floor", "floor2"]
         return random.choice(floor_sprites)
+    
+    def _get_random_wilderness_sprite(self) -> str:
+        """Get a random wilderness ground sprite."""
+        wilderness_sprites = ["big grass", "small grass", "grass flowers"]
+        return random.choice(wilderness_sprites)
     
     def _get_stair_sprite(self, x: int, y: int) -> str:
         """Get the appropriate stair sprite based on position."""
@@ -2142,6 +2677,9 @@ class Game:
             
             # Mana bar
             self._render_mana_bar(char.current_mana, char.max_mana, ui_base_x + 210, ui_base_y + 20)
+            
+            # Auto-explore status indicator dot in center of bottom bar
+            self._render_auto_explore_indicator()
         
         # Game log in bottom bar
         self._render_log_panel()
@@ -2168,6 +2706,28 @@ class Game:
         text_x = x + (bar_width - text.get_width()) // 2
         text_y = y + (bar_height - text.get_height()) // 2
         self.screen.blit(text, (text_x, text_y))
+    
+    def _render_auto_explore_indicator(self):
+        """Render auto-explore status indicator dot in center of bottom bar."""
+        # Position dot in center of screen, bottom area
+        center_x = self.screen.get_width() // 2
+        dot_y = self.screen.get_height() - 35  # Above the bottom border
+        dot_radius = 6
+        
+        # Determine color based on auto-explore state
+        if not self.auto_explore_active:
+            # Inactive - RED
+            dot_color = (255, 0, 0)
+        elif self.auto_explore_target:
+            # Active with target - GREEN
+            dot_color = (0, 255, 0)
+        else:
+            # Active but no target (complete/blocked) - AMBER
+            dot_color = (255, 191, 0)
+        
+        # Draw the dot with a black border for visibility
+        pygame.draw.circle(self.screen, (0, 0, 0), (center_x, dot_y), dot_radius + 1)  # Black border
+        pygame.draw.circle(self.screen, dot_color, (center_x, dot_y), dot_radius)  # Colored dot
     
     def _render_mana_bar(self, current_mana: int, max_mana: int, x: int, y: int):
         """Render a mana bar."""
@@ -2321,6 +2881,38 @@ class Game:
         self.last_click_pos = (tile_x, tile_y)
         self.last_mouse_click_time = current_time
         
+        # First priority: Check for enemy at clicked position for direct attack
+        enemy_at_click = self._get_enemy_at_position(tile_x, tile_y)
+        if enemy_at_click and self._is_tile_visible(tile_x, tile_y):
+            print(f"DEBUG: Direct enemy attack on {enemy_at_click.enemy_type.value} at ({tile_x}, {tile_y})")
+            # Check if enemy is adjacent for direct attack
+            player_x, player_y = self.player.x, self.player.y
+            dx = abs(tile_x - player_x)
+            dy = abs(tile_y - player_y)
+            
+            if dx <= 1 and dy <= 1 and (dx + dy) > 0:  # Adjacent but not same tile
+                # Direct attack
+                self._attack_enemy(enemy_at_click)
+                return
+            else:
+                # Move to attack range - set up pathfinding to adjacent tile
+                print(f"DEBUG: Moving to attack {enemy_at_click.enemy_type.value}")
+                # Find the best adjacent tile to attack from
+                target_tiles = []
+                for adj_x in range(tile_x - 1, tile_x + 2):
+                    for adj_y in range(tile_y - 1, tile_y + 2):
+                        if (adj_x == tile_x and adj_y == tile_y):
+                            continue  # Skip enemy tile itself
+                        if (self.current_area == GameArea.TOWN and self.town.can_move_to(adj_x, adj_y)) or \
+                           (self.current_area == GameArea.DUNGEON and self.dungeon.can_move_to(adj_x, adj_y)):
+                            target_tiles.append((adj_x, adj_y))
+                
+                if target_tiles:
+                    # Choose closest adjacent tile to player
+                    best_tile = min(target_tiles, key=lambda t: abs(t[0] - player_x) + abs(t[1] - player_y))
+                    tile_x, tile_y = best_tile
+                    print(f"DEBUG: Targeting adjacent tile ({tile_x}, {tile_y}) to attack enemy")
+        
         # Handle double-click on stairs
         if is_double_click:
             if self.current_area == GameArea.TOWN:
@@ -2382,7 +2974,12 @@ class Game:
             can_reach_exact_target = ((self.town.can_move_to(tile_x, tile_y) or 
                                      cell == CellType.DUNGEON_ENTRANCE) and 
                                     self._is_tile_explored(tile_x, tile_y))
-        else:
+        elif self.current_area == GameArea.WILDERNESS:
+            cell = self.wilderness.get_cell(tile_x, tile_y)
+            can_reach_exact_target = ((self.wilderness.can_move_to(tile_x, tile_y) or
+                                     cell in [CellType.WILDERNESS_EXIT, CellType.DUNGEON_ENTRANCE]) and 
+                                    self._is_tile_explored(tile_x, tile_y))
+        else:  # DUNGEON
             cell = self.dungeon.get_cell(tile_x, tile_y)
             can_reach_exact_target = ((self.dungeon.can_move_to(tile_x, tile_y) or
                                      cell == CellType.STAIRCASE) and 
@@ -2390,19 +2987,25 @@ class Game:
         
         print(f"DEBUG: Target ({tile_x}, {tile_y}) - Walkable: {can_reach_exact_target}")
         
-        # Try pathfinding with explored areas only first
+        # Calculate distance to determine pathfinding strategy
+        distance = abs(tile_x - start[0]) + abs(tile_y - start[1])  # Manhattan distance
+        print(f"DEBUG: Distance to target: {distance}")
+        
+        # Use A* pathfinding for all distances (already implemented)
         if self.current_area == GameArea.TOWN:
             self.click_path = self._find_path_town(start, target)
-        else:
+            print(f"DEBUG: Town pathfinding result: {len(self.click_path) if self.click_path else 0} steps")
+        elif self.current_area == GameArea.WILDERNESS:
+            self.click_path = self._find_path_unified(start, target, allow_unexplored=False)
+            print(f"DEBUG: Wilderness pathfinding result: {len(self.click_path) if self.click_path else 0} steps")
+        else:  # DUNGEON
             self.click_path = self._find_path(start, target)
+            print(f"DEBUG: Dungeon pathfinding result: {len(self.click_path) if self.click_path else 0} steps")
         
         # If no path found with explored areas, try allowing unexplored areas
         if not self.click_path:
             print(f"DEBUG: No path with explored areas only, trying with unexplored areas allowed")
-            if self.current_area == GameArea.TOWN:
-                self.click_path = self._find_path_unified(start, target, allow_unexplored=True)
-            else:
-                self.click_path = self._find_path_unified(start, target, allow_unexplored=True)
+            self.click_path = self._find_path_unified(start, target, allow_unexplored=True)
         
         if not self.click_path:
             # Try to find nearest reachable position
@@ -2417,8 +3020,13 @@ class Game:
         
         if not self.click_path:
             self.add_to_log("No path found to target!", (255, 100, 100))
-            self.click_navigation_active = False
-            self.click_target = None
+            # Only stop navigation if mouse is not held - keep trying while mouse held
+            if not self.mouse_held:
+                print("DEBUG: No path found and mouse not held - stopping navigation")
+                self.click_navigation_active = False
+                self.click_target = None
+            else:
+                print("DEBUG: No path found but mouse held - keeping navigation active to retry")
         else:
             final_target = self.click_path[-1] if self.click_path else target
             path_length = len(self.click_path)
@@ -2518,15 +3126,24 @@ class Game:
                 new_x, new_y = x + dx, y + dy
                 new_pos = (new_x, new_y)
                 
-                # Check bounds and walkability (treat town as dungeon)
-                # Determine which area we're in
+                # Special case: Always allow movement to the target destination (stairs/dungeon entrance)
+                if new_pos == target:
+                    if self.current_area == GameArea.TOWN:
+                        if (0 <= new_x < self.town.width and 0 <= new_y < self.town.height):
+                            neighbors.append(new_pos)
+                            continue
+                    else:
+                        if (0 <= new_x < self.dungeon.width and 0 <= new_y < self.dungeon.height):
+                            neighbors.append(new_pos)
+                            continue
+                
+                # Check bounds and walkability for different areas
                 if self.current_area == GameArea.TOWN:
-                    # For town, use dungeon-style pathfinding
                     if (0 <= new_x < self.town.width and 
                         0 <= new_y < self.town.height):
-                        # Check if tile is walkable (regardless of exploration when allow_unexplored=True)
+                        # Check if tile is walkable
                         cell = self.town.get_cell(new_x, new_y)
-                        is_walkable = cell in [CellType.TOWN_FLOOR, CellType.TOWN_DOOR]
+                        is_walkable = cell in [CellType.TOWN_FLOOR, CellType.TOWN_DOOR, CellType.DUNGEON_ENTRANCE, CellType.WILDERNESS_EXIT, CellType.STORAGE_CHEST, CellType.WELL]
                         
                         if is_walkable:
                             # Always allow movement when allow_unexplored is True
@@ -2534,12 +3151,25 @@ class Game:
                                 neighbors.append(new_pos)
                             elif self._is_tile_explored(new_x, new_y):
                                 neighbors.append(new_pos)
-                else:
+                elif self.current_area == GameArea.WILDERNESS:
+                    if (0 <= new_x < self.wilderness.width and 
+                        0 <= new_y < self.wilderness.height):
+                        # Check if tile is walkable
+                        cell = self.wilderness.get_cell(new_x, new_y)
+                        is_walkable = cell in [CellType.WILDERNESS_FLOOR, CellType.WILDERNESS_GRASS, CellType.WILDERNESS_EXIT, CellType.DUNGEON_ENTRANCE]
+                        
+                        if is_walkable:
+                            # Always allow movement when allow_unexplored is True
+                            if allow_unexplored:
+                                neighbors.append(new_pos)
+                            elif self._is_tile_explored(new_x, new_y):
+                                neighbors.append(new_pos)
+                else:  # DUNGEON
                     if (0 <= new_x < self.dungeon.width and 
                         0 <= new_y < self.dungeon.height):
-                        # Check if tile is walkable (regardless of exploration when allow_unexplored=True)
+                        # Check if tile is walkable
                         cell = self.dungeon.get_cell(new_x, new_y)
-                        is_walkable = cell in [CellType.FLOOR, CellType.DOOR]
+                        is_walkable = cell in [CellType.FLOOR, CellType.DOOR, CellType.STAIRCASE]
                         
                         if is_walkable:
                             # Always allow movement when allow_unexplored is True
@@ -2918,6 +3548,28 @@ class Game:
             self.update_camera()
         self.add_to_log(f"Zoom: {self.zoom_level:.1f}x ({steps}x steps)", (100, 255, 100))
     
+    def _toggle_click_hold_precise_mode(self):
+        """Toggle click-hold precise mode."""
+        self.click_hold_precise_mode = not self.click_hold_precise_mode
+        mode_str = "PRECISE" if self.click_hold_precise_mode else "CONTINUOUS"
+        self.add_to_log(f"Click-hold mode: {mode_str}", (100, 255, 100))
+    
+    def _adjust_click_hold_speed(self, adjustment: float):
+        """Adjust click-hold movement speed."""
+        old_speed = self.click_hold_movement_speed
+        self.click_hold_movement_speed = max(0.2, min(3.0, self.click_hold_movement_speed + adjustment))
+        
+        if self.click_hold_movement_speed != old_speed:
+            self.add_to_log(f"Click-hold speed: {self.click_hold_movement_speed:.1f}x", (100, 255, 100))
+    
+    def _reset_click_hold_speed(self):
+        """Reset click-hold speed to normal."""
+        old_speed = self.click_hold_movement_speed
+        self.click_hold_movement_speed = 1.0
+        
+        if self.click_hold_movement_speed != old_speed:
+            self.add_to_log("Click-hold speed: Reset to 1.0x", (100, 255, 100))
+    
     def _wait_multiple_turns(self, turns: int):
         """Wait multiple turns with modifiers."""
         if turns == 1:
@@ -3119,6 +3771,89 @@ class Game:
             if self.log_popup_scroll < max_scroll:
                 self.log_popup_scroll += 1
     
+    def _handle_npc_popup_input(self, key):
+        """Handle input for NPC popup."""
+        if not self.npc_popup_active or not self.active_npc:
+            return
+        
+        # Close popup
+        if key == pygame.K_ESCAPE:
+            self._close_npc_popup()
+            return
+        
+        # Create menu options
+        menu_options = ["Talk"] 
+        if self.active_npc.services:
+            for service in self.active_npc.services:
+                service_name = service.replace('_', ' ').title()
+                menu_options.append(service_name)
+        menu_options.append("Leave")
+        
+        # Navigate menu
+        if key == pygame.K_UP:
+            self.npc_popup_selection = (self.npc_popup_selection - 1) % len(menu_options)
+        elif key == pygame.K_DOWN:
+            self.npc_popup_selection = (self.npc_popup_selection + 1) % len(menu_options)
+        
+        # Select option
+        elif key == pygame.K_RETURN:
+            selected_option = menu_options[self.npc_popup_selection]
+            
+            if selected_option == "Talk":
+                # Get new dialogue
+                dialogue = self.active_npc.get_dialogue()
+                self.add_to_log(f"{self.active_npc.name} says: \"{dialogue}\"", (200, 255, 200))
+            
+            elif selected_option == "Leave":
+                self._close_npc_popup()
+            
+            else:
+                # Handle service selection
+                original_service = None
+                if self.active_npc.services:
+                    for service in self.active_npc.services:
+                        if service.replace('_', ' ').title() == selected_option:
+                            original_service = service
+                            break
+                
+                if original_service:
+                    self._handle_npc_service(original_service)
+                else:
+                    self.add_to_log(f"Service '{selected_option}' is not yet implemented.", (255, 200, 100))
+    
+    def _handle_npc_service(self, service):
+        """Handle NPC service selection."""
+        npc_name = self.active_npc.name
+        
+        # Basic service implementations
+        if service == "heal":
+            if self.player.character.current_hp < self.player.character.max_hp:
+                self.player.character.current_hp = self.player.character.max_hp
+                self.add_to_log(f"{npc_name} heals you to full health!", (100, 255, 100))
+            else:
+                self.add_to_log(f"{npc_name} says: \"You look healthy already!\"", (200, 255, 200))
+        
+        elif service in ["buy_potions", "buy_scrolls", "buy_weapons", "buy_armor", "buy_supplies"]:
+            self.add_to_log(f"{npc_name} says: \"My shop is coming soon!\"", (200, 255, 200))
+        
+        elif service == "repair":
+            self.add_to_log(f"{npc_name} says: \"I'll have repair services available soon!\"", (200, 255, 200))
+        
+        elif service == "identify":
+            self.add_to_log(f"{npc_name} says: \"Bring me mysterious items to identify!\"", (200, 255, 200))
+        
+        elif service in ["rest", "rumors"]:
+            self.add_to_log(f"{npc_name} says: \"Make yourself comfortable!\"", (200, 255, 200))
+        
+        elif service in ["bless", "guidance"]:
+            self.add_to_log(f"{npc_name} offers a blessing. You feel slightly more confident.", (200, 255, 200))
+        
+        elif service in ["trade_rare", "buy_gems", "sell_exotic"]:
+            self.add_to_log(f"{npc_name} says: \"I'm setting up my exotic inventory!\"", (200, 255, 200))
+        
+        else:
+            self.add_to_log(f"{npc_name} says: \"That service isn't available right now.\"", (200, 255, 200))
+    
     def _toggle_auto_explore(self):
         """Toggle auto-explore mode."""
         if not self.player:
@@ -3134,13 +3869,14 @@ class Game:
             self.auto_explore_path = []
             self.auto_explore_target = None
             self.auto_explore_failed_attempts = 0
-            self.add_to_log("Auto-explore disabled", (255, 255, 255))
+            # Log message removed - status now shown by dot indicator
         else:
             self.auto_explore_active = True
             self.auto_explore_failed_attempts = 0
             self._find_next_exploration_target()
             if self.auto_explore_target:
-                self.add_to_log("Auto-explore enabled", (100, 150, 255))
+                # Log message removed - status now shown by dot indicator
+                pass
             else:
                 self.add_to_log("Auto-explore complete: all areas explored!", (100, 255, 100))
                 self.auto_explore_active = False
@@ -3163,13 +3899,12 @@ class Game:
                     return
                 else:
                     # Enemy not adjacent, enable attack mode to move towards enemies
-                    self.add_to_log(f"Enemy detected: {closest_enemy.enemy_type.value} - moving to attack!", (255, 100, 100))
-                    # Enable attack mode to move towards the enemy
+                    # Reduced log noise - just enable attack mode silently
                     self.auto_explore_attack_mode = True
                     self.auto_explore_active = True
                     return
             else:
-                self.add_to_log("No enemies to attack!", (255, 255, 100))
+                # Reduced log noise - no message for no enemies
                 return
         
         if self.auto_explore_active and self.auto_explore_attack_mode:
@@ -3178,14 +3913,15 @@ class Game:
             self.auto_explore_active = False
             self.auto_explore_path = []
             self.auto_explore_target = None
-            self.add_to_log("Auto-explore attack mode disabled", (255, 255, 255))
+            # Log message removed - status now shown by dot indicator
         else:
             # Enable attack mode
             self.auto_explore_attack_mode = True
             self.auto_explore_active = True
             self._find_next_exploration_target()
             if self.auto_explore_target:
-                self.add_to_log("Auto-explore attack mode enabled", (255, 100, 100))
+                # Log message removed - status now shown by dot indicator
+                pass
             else:
                 self.add_to_log("Auto-explore complete: all areas explored!", (100, 255, 100))
                 self.auto_explore_active = False
@@ -3550,25 +4286,43 @@ class Game:
     
     def _update_click_navigation(self):
         """Update click navigation movement."""
+        print(f"NAVIGATION LOG: _update_click_navigation called - Active: {self.click_navigation_active}, Path: {len(self.click_path) if self.click_path else 0}, Player: {self.player is not None}")
         if not self.click_navigation_active or not self.click_path or not self.player:
+            if not self.click_navigation_active:
+                print("NAVIGATION LOG: Navigation not active - exiting")
+            elif not self.click_path:
+                print("NAVIGATION LOG: No path - exiting")
+            elif not self.player:
+                print("NAVIGATION LOG: No player - exiting")
             return
         
-        # Check if player can move
+        # Check if player can move (with click-hold speed adjustment)
         current_time = pygame.time.get_ticks() / 1000.0
-        if not self.player.can_move(current_time):
+        speed_multiplier = self.click_hold_movement_speed if self.click_navigation_active else 1.0
+        if not self.player.can_move(current_time, speed_multiplier):
+            print(f"NAVIGATION LOG: Player can't move yet - waiting (last move: {self.player.last_move_time}, current: {current_time}, cooldown: {self.player.move_cooldown}, speed: {speed_multiplier})")
             return
         
         # Get next position in path
         next_pos = self.click_path[0]
+        print(f"NAVIGATION LOG: Next step in path: {next_pos}, remaining path: {len(self.click_path)} steps")
         
         # Check if there's an enemy at the destination
         enemy_at_destination = self._get_enemy_at_position(next_pos[0], next_pos[1])
         if enemy_at_destination:
             # Attack the enemy instead of moving
+            print(f"NAVIGATION LOG: Enemy at destination - attacking {enemy_at_destination.enemy_type.value}")
             self._attack_enemy(enemy_at_destination)
-            self.click_navigation_active = False
-            self.click_path = []
-            self.click_target = None
+            # IMPORTANT: Don't stop navigation if mouse is held!
+            if not self.mouse_held:
+                print("NAVIGATION LOG: Stopping navigation after attack - mouse not held")
+                self.click_navigation_active = False
+                self.click_path = []
+                self.click_target = None
+            else:
+                print("NAVIGATION LOG: Continuing navigation after attack - mouse still held")
+                # Clear path but keep navigation active for continuous targeting
+                self.click_path = []
             return
         
         # Move to next position
@@ -3585,21 +4339,50 @@ class Game:
         if can_move:
             # Check if we're already at the next position (shouldn't happen, but safety check)
             if next_pos[0] == self.player.x and next_pos[1] == self.player.y:
-                print(f"DEBUG: Already at next position ({next_pos[0]}, {next_pos[1]}), removing from path")
+                print(f"NAVIGATION LOG: Player already at next position ({next_pos[0]}, {next_pos[1]}), removing from path")
                 self.click_path.pop(0)
                 return
             
+            print(f"NAVIGATION LOG: Moving player to {next_pos}")
             self.player.move_to(next_pos[0], next_pos[1], current_time)
             self.update_camera()
             
             # Remove the completed step from path
             self.click_path.pop(0)
+            print(f"NAVIGATION LOG: Step completed, remaining path: {len(self.click_path)} steps")
             
             # Check if we've reached the target
             if not self.click_path:
-                self.click_navigation_active = False
-                self.click_target = None
-                self.add_to_log("Reached destination!", (100, 255, 100))
+                # Check for adjacent enemies to attack
+                player_x, player_y = self.player.x, self.player.y
+                adjacent_enemy = None
+                
+                # Check all adjacent tiles for enemies
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        if dx == 0 and dy == 0:
+                            continue
+                        check_x, check_y = player_x + dx, player_y + dy
+                        enemy = self._get_enemy_at_position(check_x, check_y)
+                        if enemy and self._is_tile_visible(check_x, check_y):
+                            adjacent_enemy = enemy
+                            break
+                    if adjacent_enemy:
+                        break
+                
+                if adjacent_enemy:
+                    print(f"DEBUG: Auto-attacking adjacent enemy {adjacent_enemy.enemy_type.value}")
+                    self._attack_enemy(adjacent_enemy)
+                else:
+                    self.add_to_log("Reached destination!", (100, 255, 100))
+                
+                # Only stop navigation if mouse is not being held - critical for continuous control
+                if not self.mouse_held:
+                    print("NAVIGATION LOG: Navigation completed - mouse not held, STOPPING NAVIGATION")
+                    self.click_navigation_active = False
+                    self.click_target = None
+                else:
+                    print("NAVIGATION LOG: Navigation completed but mouse still held - KEEPING NAVIGATION ACTIVE for continuous control")
             else:
                 # Check for special interactions
                 self._check_special_tiles(next_pos[0], next_pos[1])
@@ -3621,16 +4404,24 @@ class Game:
                     self.click_path = new_path
                     self.add_to_log("Path recalculated", (255, 255, 100))
                 else:
-                    # No new path found, cancel navigation
+                    # No new path found, cancel navigation ONLY if mouse not held
+                    if not self.mouse_held:
+                        print("NAVIGATION LOG: No new path found and mouse not held - cancelling navigation")
+                        self.click_navigation_active = False
+                        self.click_path = []
+                        self.click_target = None
+                    else:
+                        print("NAVIGATION LOG: No new path found but mouse held - keeping navigation active")
+                        self.add_to_log("Path blocked and no alternative found!", (255, 100, 100))
+            else:
+                # No target, cancel navigation ONLY if mouse not held
+                if not self.mouse_held:
+                    print("NAVIGATION LOG: No target and mouse not held - cancelling navigation")
                     self.click_navigation_active = False
                     self.click_path = []
-                    self.click_target = None
-                    self.add_to_log("Path blocked and no alternative found!", (255, 100, 100))
-            else:
-                # No target, cancel navigation
-                self.click_navigation_active = False
-                self.click_path = []
-                self.add_to_log("Path blocked!", (255, 100, 100))
+                    self.add_to_log("Path blocked!", (255, 100, 100))
+                else:
+                    print("NAVIGATION LOG: No target but mouse held - keeping navigation active")
     
     def _render_click_path(self):
         """Render the click navigation path."""
@@ -4086,6 +4877,148 @@ class Game:
         instruction_text = "Press L to close | UP/DOWN arrows to scroll | Mouse wheel to scroll"
         instruction_surface = self.small_font.render(instruction_text, True, (150, 150, 150))
         instruction_rect = instruction_surface.get_rect(center=(popup_x + popup_width // 2, popup_y + popup_height - 20))
+        self.screen.blit(instruction_surface, instruction_rect)
+
+    def _open_npc_popup(self, npc):
+        """Open NPC interaction popup."""
+        self.npc_popup_active = True
+        self.active_npc = npc
+        self.npc_popup_selection = 0
+        # Add to log for feedback
+        self.add_to_log(f"Talking to {npc.name}...", (100, 255, 100))
+
+    def _close_npc_popup(self):
+        """Close NPC interaction popup."""
+        self.npc_popup_active = False
+        self.active_npc = None
+        self.npc_popup_selection = 0
+
+    def _render_npc_popup(self):
+        """Render NPC interaction popup with colored avatar and service options."""
+        if not self.npc_popup_active or not self.active_npc:
+            return
+        
+        # Create semi-transparent overlay
+        overlay = pygame.Surface(self.screen.get_size())
+        overlay.set_alpha(150)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+        
+        # Popup dimensions
+        popup_width = 500
+        popup_height = 400
+        popup_x = (self.screen.get_width() - popup_width) // 2
+        popup_y = (self.screen.get_height() - popup_height) // 2
+        
+        # Draw popup background with border
+        pygame.draw.rect(self.screen, (40, 40, 60), (popup_x, popup_y, popup_width, popup_height))
+        pygame.draw.rect(self.screen, (100, 200, 255), (popup_x, popup_y, popup_width, popup_height), 3)
+        
+        # NPC avatar background (colored by type)
+        avatar_size = 80
+        avatar_x = popup_x + 20
+        avatar_y = popup_y + 20
+        
+        # Color based on NPC type
+        avatar_colors = {
+            'healer': (100, 255, 100),    # Green
+            'blacksmith': (255, 150, 50), # Orange
+            'wizard': (150, 100, 255),    # Purple
+            'innkeeper': (255, 200, 100), # Yellow
+            'shopkeeper': (100, 255, 255), # Cyan
+            'priest': (255, 255, 200),    # Light yellow
+            'trader': (255, 100, 150)     # Pink
+        }
+        
+        avatar_color = avatar_colors.get(self.active_npc.npc_type, (150, 150, 150))
+        pygame.draw.rect(self.screen, avatar_color, (avatar_x, avatar_y, avatar_size, avatar_size))
+        pygame.draw.rect(self.screen, (255, 255, 255), (avatar_x, avatar_y, avatar_size, avatar_size), 2)
+        
+        # Try to render NPC avatar sprite
+        avatar_sprite = f"{self.active_npc.npc_type}_avatar"
+        sprite_drawn = self.sprite_manager.sprite_system.draw_sprite(
+            self.screen, avatar_sprite, avatar_x + 10, avatar_y + 10,
+            scale=4  # Large avatar
+        )
+        
+        if not sprite_drawn:
+            # Fallback: draw simple avatar representation
+            center_x = avatar_x + avatar_size // 2
+            center_y = avatar_y + avatar_size // 2
+            pygame.draw.circle(self.screen, (200, 200, 200), (center_x, center_y), 25)
+            # Draw type letter
+            type_letter = self.active_npc.npc_type[0].upper()
+            letter_surface = self.font.render(type_letter, True, (50, 50, 50))
+            letter_rect = letter_surface.get_rect(center=(center_x, center_y))
+            self.screen.blit(letter_surface, letter_rect)
+        
+        # NPC name and title
+        name_x = avatar_x + avatar_size + 20
+        name_y = avatar_y + 10
+        
+        name_surface = self.font.render(self.active_npc.name, True, (255, 255, 255))
+        self.screen.blit(name_surface, (name_x, name_y))
+        
+        type_surface = self.small_font.render(f"({self.active_npc.npc_type.title()})", True, (200, 200, 200))
+        self.screen.blit(type_surface, (name_x, name_y + 30))
+        
+        # Current dialogue
+        dialogue = self.active_npc.get_dialogue()
+        dialogue_y = popup_y + 130
+        
+        # Word wrap dialogue
+        max_width = popup_width - 40
+        words = dialogue.split(' ')
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            test_surface = self.small_font.render(test_line, True, (255, 255, 255))
+            if test_surface.get_width() <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        for i, line in enumerate(lines):
+            line_surface = self.small_font.render(line, True, (255, 255, 255))
+            self.screen.blit(line_surface, (popup_x + 20, dialogue_y + i * 20))
+        
+        # Service menu options
+        options_y = dialogue_y + len(lines) * 20 + 30
+        
+        # Create menu options
+        menu_options = ["Talk"] 
+        if self.active_npc.services:
+            for service in self.active_npc.services:
+                service_name = service.replace('_', ' ').title()
+                menu_options.append(service_name)
+        menu_options.append("Leave")
+        
+        # Render menu options
+        for i, option in enumerate(menu_options):
+            option_y = options_y + i * 35
+            
+            # Highlight selected option
+            if i == self.npc_popup_selection:
+                highlight_rect = pygame.Rect(popup_x + 15, option_y - 5, popup_width - 30, 30)
+                pygame.draw.rect(self.screen, (80, 80, 120), highlight_rect)
+                text_color = (255, 255, 100)
+            else:
+                text_color = (200, 200, 200)
+            
+            option_surface = self.small_font.render(f"• {option}", True, text_color)
+            self.screen.blit(option_surface, (popup_x + 25, option_y))
+        
+        # Instructions
+        instruction_text = "UP/DOWN: Navigate | ENTER: Select | ESC: Close"
+        instruction_surface = self.small_font.render(instruction_text, True, (150, 150, 150))
+        instruction_rect = instruction_surface.get_rect(center=(popup_x + popup_width // 2, popup_y + popup_height - 25))
         self.screen.blit(instruction_surface, instruction_rect)
 
 def main():
